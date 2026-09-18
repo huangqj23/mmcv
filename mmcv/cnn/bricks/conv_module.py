@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from mmengine.model import constant_init, kaiming_init
-from mmengine.registry import MODELS
+from mmengine.registry import MODELS, cfg_type_matches
 from mmengine.utils.dl_utils.parrots_wrapper import _BatchNorm, _InstanceNorm
 
 from .activation import build_activation_layer
@@ -215,10 +215,10 @@ class ConvModule(nn.Module):
         # build activation layer
         if self.with_activation:
             act_cfg_ = act_cfg.copy()  # type: ignore
-            # nn.Tanh has no 'inplace' argument
-            if act_cfg_['type'] not in [
-                    'Tanh', 'PReLU', 'Sigmoid', 'HSigmoid', 'Swish', 'GELU'
-            ]:
+            # nn.Tanh has no 'inplace' argument. ``type`` may be a registered
+            # name or the class itself (pure-Python style config).
+            if not cfg_type_matches(act_cfg_['type'], 'Tanh', 'PReLU',
+                                    'Sigmoid', 'HSigmoid', 'Swish', 'GELU'):
                 act_cfg_.setdefault('inplace', inplace)
             self.activate = build_activation_layer(act_cfg_)
 
@@ -243,7 +243,8 @@ class ConvModule(nn.Module):
         # Note: For PyTorch's conv layers, they will be overwritten by our
         #    initialization implementation using default ``kaiming_init``.
         if not hasattr(self.conv, 'init_weights'):
-            if self.with_activation and self.act_cfg['type'] == 'LeakyReLU':
+            if self.with_activation and cfg_type_matches(
+                    self.act_cfg['type'], 'LeakyReLU'):
                 nonlinearity = 'leaky_relu'
                 a = self.act_cfg.get('negative_slope', 0.01)
             else:

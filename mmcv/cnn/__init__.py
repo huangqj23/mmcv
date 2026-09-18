@@ -8,7 +8,8 @@ from .bricks import (ContextBlock, Conv2d, Conv3d, ConvAWS2d, ConvModule,
                      NonLocal1d, NonLocal2d, NonLocal3d, Scale, Swish,
                      build_activation_layer, build_conv_layer,
                      build_norm_layer, build_padding_layer, build_plugin_layer,
-                     build_upsample_layer, conv_ws_2d, is_norm)
+                     build_upsample_layer, conv_ws_2d, is_norm,
+                     upsample_method)
 # yapf: enable
 from .resnet import ResNet, make_res_layer
 from .rfsearch import Conv2dRFSearchOp, RFSearchHook
@@ -19,6 +20,7 @@ __all__ = [
     'AlexNet', 'VGG', 'make_vgg_layer', 'ResNet', 'make_res_layer',
     'ConvModule', 'build_activation_layer', 'build_conv_layer',
     'build_norm_layer', 'build_padding_layer', 'build_upsample_layer',
+    'upsample_method',
     'build_plugin_layer', 'is_norm', 'NonLocal1d', 'NonLocal2d', 'NonLocal3d',
     'ContextBlock', 'HSigmoid', 'Swish', 'HSwish', 'GeneralizedAttention',
     'Scale', 'conv_ws_2d', 'ConvAWS2d', 'ConvWS2d',

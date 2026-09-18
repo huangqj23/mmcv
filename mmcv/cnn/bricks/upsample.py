@@ -1,12 +1,13 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import inspect
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmengine.model import xavier_init
-from mmengine.registry import MODELS
+from mmengine.registry import (MODELS, cfg_type_matches, cfg_type_name,
+                               resolve_cfg_type)
 
 MODELS.register_module('nearest', module=nn.Upsample)
 MODELS.register_module('bilinear', module=nn.Upsample)
@@ -77,18 +78,53 @@ def build_upsample_layer(cfg: Dict, *args, **kwargs) -> nn.Module:
 
     layer_type = cfg_.pop('type')
 
-    if inspect.isclass(layer_type):
-        upsample = layer_type
-    # Switch registry to the target scope. If `upsample` cannot be found
-    # in the registry, fallback to search `upsample` in the
-    # mmengine.MODELS.
-    else:
+    if isinstance(layer_type, str):
+        # Switch registry to the target scope. If `upsample` cannot be found
+        # in the registry, fallback to search `upsample` in the
+        # mmengine.MODELS.
         with MODELS.switch_scope_and_registry(None) as registry:
             upsample = registry.get(layer_type)
         if upsample is None:
             raise KeyError(f'Cannot find {upsample} in registry under scope '
                            f'name {registry.scope}')
         if upsample is nn.Upsample:
+            # 'nearest' / 'bilinear' are both registered as nn.Upsample; the
+            # interpolation mode lives in the name.
             cfg_['mode'] = layer_type
+    else:
+        # ``type`` given as a class (pure-Python style config). nn.Upsample
+        # then takes its interpolation mode from the ``mode`` key, e.g.
+        # ``dict(type=nn.Upsample, scale_factor=2, mode='bilinear')``;
+        # without it PyTorch's default 'nearest' applies.
+        upsample = resolve_cfg_type(layer_type, MODELS)
+        if upsample is nn.Upsample:
+            cfg_.setdefault('mode', 'nearest')
     layer = upsample(*args, **kwargs, **cfg_)
     return layer
+
+
+def upsample_method(cfg: Optional[Dict]) -> Optional[str]:
+    """Traditional upsample method name of an ``upsample_cfg``.
+
+    Code that dispatches on the method name (``'deconv'``, ``'carafe'``,
+    ``'nearest'``, ...) should call this instead of reading ``cfg['type']`` so
+    that ``type`` may also be written as a class:
+
+    - string ``type``: returned unchanged;
+    - ``nn.Upsample``: the ``mode`` key (default ``'nearest'``);
+    - classes registered as ``'deconv'`` / ``'pixel_shuffle'`` / ``'carafe'``:
+      that name;
+    - anything else: its registered name, or ``__name__``.
+    """
+    if cfg is None:
+        return None
+    t = cfg.get('type')
+    if t is None or isinstance(t, str):
+        return t
+    t = resolve_cfg_type(t, MODELS)
+    if t is nn.Upsample:
+        return cfg.get('mode', 'nearest')
+    for name in ('deconv', 'pixel_shuffle', 'carafe'):
+        if cfg_type_matches(t, name):
+            return name
+    return cfg_type_name(t)

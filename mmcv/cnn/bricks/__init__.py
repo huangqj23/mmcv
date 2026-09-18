@@ -16,13 +16,14 @@ from .padding import build_padding_layer
 from .plugin import build_plugin_layer
 from .scale import LayerScale, Scale
 from .swish import Swish
-from .upsample import build_upsample_layer
+from .upsample import build_upsample_layer, upsample_method
 from .wrappers import (Conv2d, Conv3d, ConvTranspose2d, ConvTranspose3d,
                        Linear, MaxPool2d, MaxPool3d)
 
 __all__ = [
     'ConvModule', 'build_activation_layer', 'build_conv_layer',
     'build_norm_layer', 'build_padding_layer', 'build_upsample_layer',
+    'upsample_method',
     'build_plugin_layer', 'is_norm', 'HSigmoid', 'HSwish', 'NonLocal1d',
     'NonLocal2d', 'NonLocal3d', 'ContextBlock', 'GeneralizedAttention',
     'Scale', 'ConvAWS2d', 'ConvWS2d', 'conv_ws_2d',

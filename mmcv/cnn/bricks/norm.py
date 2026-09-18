@@ -3,7 +3,7 @@ import inspect
 from typing import Dict, Tuple, Union
 
 import torch.nn as nn
-from mmengine.registry import MODELS
+from mmengine.registry import MODELS, cfg_type_matches
 from mmengine.utils import is_tuple_of
 from mmengine.utils.dl_utils.parrots_wrapper import (SyncBatchNorm, _BatchNorm,
                                                      _InstanceNorm)
@@ -118,7 +118,8 @@ def build_norm_layer(cfg: Dict,
     cfg_.setdefault('eps', 1e-5)
     if norm_layer is not nn.GroupNorm:
         layer = norm_layer(num_features, **cfg_)
-        if layer_type == 'SyncBN' and hasattr(layer, '_specify_ddp_gpu_num'):
+        if cfg_type_matches(layer_type, 'SyncBN') and hasattr(
+                layer, '_specify_ddp_gpu_num'):
             layer._specify_ddp_gpu_num(1)
     else:
         assert 'num_groups' in cfg_
