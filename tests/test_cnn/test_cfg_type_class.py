@@ -68,3 +68,31 @@ def test_upsample_method():
     assert upsample_method(dict(type=nn.Upsample, mode='bilinear')) == 'bilinear'
     assert upsample_method(dict(type=ConvTranspose2d)) == 'deconv'
     assert upsample_method(dict(type=CARAFEPack)) == 'carafe'
+
+
+def test_import_path_types():
+    """``Config.dump`` writes a class ``type`` as its import path."""
+    by_cls = build_upsample_layer(
+        dict(type=nn.Upsample, scale_factor=2, mode='bilinear'))
+    by_path = build_upsample_layer(
+        dict(type='torch.nn.Upsample', scale_factor=2, mode='bilinear'))
+    assert repr(by_cls) == repr(by_path)
+    layer = build_upsample_layer(
+        dict(type='torch.nn.Upsample', scale_factor=2))
+    assert layer.mode == 'nearest'
+    assert upsample_method(dict(type='mmcv.cnn.ConvTranspose2d')) == 'deconv'
+    assert upsample_method(dict(type='mmcv.ops.CARAFEPack')) == 'carafe'
+    assert upsample_method(
+        dict(type='torch.nn.Upsample', mode='bilinear')) == 'bilinear'
+
+
+def test_batched_nms_type_forms():
+    from mmcv.ops import batched_nms, nms
+    torch.manual_seed(0)
+    boxes = torch.rand(30, 4) * 50
+    boxes[:, 2:] += boxes[:, :2]
+    scores, idxs = torch.rand(30), torch.randint(0, 3, (30, ))
+    ref = batched_nms(boxes, scores, idxs, dict(type='nms', iou_threshold=0.3))
+    for t in (nms, 'mmcv.ops.nms'):
+        out = batched_nms(boxes, scores, idxs, dict(type=t, iou_threshold=0.3))
+        assert torch.equal(ref[0], out[0]) and torch.equal(ref[1], out[1])

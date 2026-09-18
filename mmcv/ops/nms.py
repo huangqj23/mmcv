@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from mmengine.utils import deprecated_api_warning
+from mmengine.utils import deprecated_api_warning, get_object_from_string
 from torch import Tensor
 
 from ..utils import ext_loader
@@ -295,7 +295,12 @@ def batched_nms(boxes: Tensor,
 
     nms_op = nms_cfg_.pop('type', 'nms')
     if isinstance(nms_op, str):
-        nms_op = eval(nms_op)
+        if '.' in nms_op:
+            # an import path such as 'mmcv.ops.nms' comes from a dumped
+            # pure-Python config whose ``type`` was the function itself
+            nms_op = get_object_from_string(nms_op)
+        else:
+            nms_op = eval(nms_op)
 
     split_thr = nms_cfg_.pop('split_thr', 10000)
     # Won't split to multiple nms nodes when exporting to onnx

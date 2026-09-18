@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mmengine.model import xavier_init
 from mmengine.registry import (MODELS, cfg_type_matches, cfg_type_name,
-                               resolve_cfg_type)
+                               is_import_path, resolve_cfg_type)
 
 MODELS.register_module('nearest', module=nn.Upsample)
 MODELS.register_module('bilinear', module=nn.Upsample)
@@ -88,9 +88,14 @@ def build_upsample_layer(cfg: Dict, *args, **kwargs) -> nn.Module:
             raise KeyError(f'Cannot find {upsample} in registry under scope '
                            f'name {registry.scope}')
         if upsample is nn.Upsample:
-            # 'nearest' / 'bilinear' are both registered as nn.Upsample; the
-            # interpolation mode lives in the name.
-            cfg_['mode'] = layer_type
+            if is_import_path(layer_type):
+                # the class written as its import path (a dumped pure-Python
+                # config): same as the class branch below
+                cfg_.setdefault('mode', 'nearest')
+            else:
+                # 'nearest' / 'bilinear' are both registered as nn.Upsample;
+                # the interpolation mode lives in the name.
+                cfg_['mode'] = layer_type
     else:
         # ``type`` given as a class (pure-Python style config). nn.Upsample
         # then takes its interpolation mode from the ``mode`` key, e.g.
@@ -110,7 +115,8 @@ def upsample_method(cfg: Optional[Dict]) -> Optional[str]:
     ``'nearest'``, ...) should call this instead of reading ``cfg['type']`` so
     that ``type`` may also be written as a class:
 
-    - string ``type``: returned unchanged;
+    - string ``type``: returned unchanged (an import path as written by
+      ``Config.dump`` is treated like the class);
     - ``nn.Upsample``: the ``mode`` key (default ``'nearest'``);
     - classes registered as ``'deconv'`` / ``'pixel_shuffle'`` / ``'carafe'``:
       that name;
@@ -119,7 +125,7 @@ def upsample_method(cfg: Optional[Dict]) -> Optional[str]:
     if cfg is None:
         return None
     t = cfg.get('type')
-    if t is None or isinstance(t, str):
+    if t is None or (isinstance(t, str) and not is_import_path(t)):
         return t
     t = resolve_cfg_type(t, MODELS)
     if t is nn.Upsample:
