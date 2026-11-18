@@ -70,6 +70,9 @@ class ModulatedDeformConv2dFunction(Function):
         weight = weight.type_as(input)
         bias = bias.type_as(input)  # type: ignore
         mask = mask.type_as(input)
+        # the kernels read raw memory as dense tensors
+        input, offset, mask, weight, bias = (
+            t.contiguous() for t in (input, offset, mask, weight, bias))
         ctx.save_for_backward(input, offset, mask, weight, bias)
         output = input.new_empty([
             int(i) for i in ModulatedDeformConv2dFunction._output_size(
@@ -102,6 +105,7 @@ class ModulatedDeformConv2dFunction(Function):
     @once_differentiable
     def backward(ctx, grad_output: torch.Tensor) -> tuple:
         input, offset, mask, weight, bias = ctx.saved_tensors
+        grad_output = grad_output.contiguous()
         grad_input = torch.zeros_like(input)
         grad_offset = torch.zeros_like(offset)
         grad_mask = torch.zeros_like(mask)

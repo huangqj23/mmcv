@@ -40,6 +40,9 @@ class SigmoidFocalLossFunction(Function):
         ctx.gamma = float(gamma)
         ctx.alpha = float(alpha)
         ctx.reduction = ctx.reduction_dict[reduction]
+        # the kernels read raw memory as dense tensors
+        input, target, weight = (input.contiguous(), target.contiguous(),
+                                 weight.contiguous())
 
         output = input.new_zeros(input.size())
 
@@ -131,6 +134,9 @@ class SoftmaxFocalLossFunction(Function):
         ctx.gamma = float(gamma)
         ctx.alpha = float(alpha)
         ctx.reduction = ctx.reduction_dict[reduction]
+        # the kernels read raw memory as dense tensors
+        input, target, weight = (input.contiguous(), target.contiguous(),
+                                 weight.contiguous())
 
         channel_stats, _ = torch.max(input, dim=1)
         input_softmax = input - channel_stats.unsqueeze(1).expand_as(input)

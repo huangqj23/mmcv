@@ -61,6 +61,12 @@ class MultiScaleDeformableAttnFunction(Function):
         # pytorch version is.
         sampling_locations = sampling_locations.type_as(value)
         attention_weights = attention_weights.type_as(value)
+        # the kernels read raw memory as dense tensors
+        value, sampling_locations, attention_weights = (
+            value.contiguous(), sampling_locations.contiguous(),
+            attention_weights.contiguous())
+        value_spatial_shapes = value_spatial_shapes.contiguous()
+        value_level_start_index = value_level_start_index.contiguous()
 
         output = ext_module.ms_deform_attn_forward(
             value,

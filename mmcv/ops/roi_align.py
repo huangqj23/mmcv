@@ -74,6 +74,8 @@ class RoIAlignFunction(Function):
         ctx.pool_mode = 0 if pool_mode == 'max' else 1
         ctx.aligned = aligned
         ctx.input_shape = input.size()
+        # the kernels read raw memory as dense tensors
+        input, rois = input.contiguous(), rois.contiguous()
 
         assert rois.size(1) == 5, 'RoI must be (idx, x1, y1, x2, y2)!'
 

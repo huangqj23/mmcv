@@ -80,6 +80,9 @@ class DeformConv2dFunction(Function):
         # whatever the pytorch version is.
         input = input.type_as(offset)
         weight = weight.type_as(input)
+        # the kernels read raw memory as dense tensors
+        input, offset, weight = (input.contiguous(), offset.contiguous(),
+                                 weight.contiguous())
         ctx.save_for_backward(input, offset, weight)
 
         output = input.new_empty([
@@ -119,6 +122,7 @@ class DeformConv2dFunction(Function):
     ) -> Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor], None,
                None, None, None, None, None, None]:
         input, offset, weight = ctx.saved_tensors
+        grad_output = grad_output.contiguous()
 
         grad_input = grad_offset = grad_weight = None
 

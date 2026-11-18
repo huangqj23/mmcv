@@ -41,6 +41,9 @@ class DeformRoIPoolFunction(Function):
                 gamma: float = 0.1) -> Tensor:
         if offset is None:
             offset = input.new_zeros(0)
+        # the kernels read raw memory as dense tensors
+        input, rois, offset = (input.contiguous(), rois.contiguous(),
+                               offset.contiguous())
         ctx.output_size = _pair(output_size)
         ctx.spatial_scale = float(spatial_scale)
         ctx.sampling_ratio = int(sampling_ratio)
@@ -72,6 +75,7 @@ class DeformRoIPoolFunction(Function):
         ctx, grad_output: Tensor
     ) -> Tuple[Tensor, None, Tensor, None, None, None, None]:
         input, rois, offset = ctx.saved_tensors
+        grad_output = grad_output.contiguous()
         grad_input = grad_output.new_zeros(input.shape)
         grad_offset = grad_output.new_zeros(offset.shape)
 

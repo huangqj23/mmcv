@@ -73,6 +73,8 @@ class PSAMaskFunction(Function):
                 mask_size: int) -> torch.Tensor:
         ctx.psa_type = psa_type
         ctx.mask_size = _pair(mask_size)
+        # the kernels read raw memory as dense tensors
+        input = input.contiguous()
         ctx.save_for_backward(input)
 
         h_mask, w_mask = ctx.mask_size
@@ -99,6 +101,7 @@ class PSAMaskFunction(Function):
             ctx, grad_output: torch.Tensor
     ) -> Tuple[torch.Tensor, None, None, None]:
         input = ctx.saved_tensors[0]
+        grad_output = grad_output.contiguous()
         psa_type = ctx.psa_type
         h_mask, w_mask = ctx.mask_size
         batch_size, channels, h_feature, w_feature = input.size()

@@ -45,6 +45,8 @@ class CARAFENaiveFunction(Function):
         ctx.scale_factor = scale_factor
         ctx.feature_size = features.size()
         ctx.mask_size = masks.size()
+        # the kernels read raw memory as dense tensors
+        features, masks = features.contiguous(), masks.contiguous()
 
         n, c, h, w = features.size()
         output = features.new_zeros((n, c, h * scale_factor, w * scale_factor))
@@ -132,6 +134,8 @@ class CARAFEFunction(Function):
         ctx.scale_factor = scale_factor
         ctx.feature_size = features.size()
         ctx.mask_size = masks.size()
+        # the kernels read raw memory as dense tensors
+        features, masks = features.contiguous(), masks.contiguous()
 
         n, c, h, w = features.size()
         output = features.new_zeros((n, c, h * scale_factor, w * scale_factor))

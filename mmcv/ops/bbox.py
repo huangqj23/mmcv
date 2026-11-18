@@ -116,6 +116,8 @@ def bbox_overlaps(bboxes1: torch.Tensor,
     if rows * cols == 0:
         return ious
 
+    # the kernels read raw memory as dense tensors
+    bboxes1, bboxes2 = bboxes1.contiguous(), bboxes2.contiguous()
     ext_module.bbox_overlaps(
         bboxes1, bboxes2, ious, mode=mode_flag, aligned=aligned, offset=offset)
 

@@ -23,6 +23,8 @@ class NMSop(torch.autograd.Function):
             valid_inds = torch.nonzero(
                 valid_mask, as_tuple=False).squeeze(dim=1)
 
+        # the kernels read raw memory as dense tensors
+        bboxes, scores = bboxes.contiguous(), scores.contiguous()
         inds = ext_module.nms(
             bboxes, scores, iou_threshold=float(iou_threshold), offset=offset)
 
@@ -39,6 +41,8 @@ class SoftNMSop(torch.autograd.Function):
     def forward(ctx: Any, boxes: Tensor, scores: Tensor, iou_threshold: float,
                 sigma: float, min_score: float, method: int,
                 offset: int) -> Tuple[Tensor, Tensor]:
+        # the kernels read raw memory as dense tensors
+        boxes, scores = boxes.contiguous(), scores.contiguous()
         dets = boxes.new_empty((boxes.size(0), 5), device='cpu')
         inds = ext_module.softnms(
             boxes.cpu(),
@@ -328,9 +332,9 @@ def nms_match(dets: array_like_type,
         assert dets.shape[-1] == 5, 'inputs dets.shape should be (N, 5), ' \
                                     f'but get {dets.shape}'
         if isinstance(dets, Tensor):
-            dets_t = dets.detach().cpu()
+            dets_t = dets.detach().cpu().contiguous()
         else:
-            dets_t = torch.from_numpy(dets)
+            dets_t = torch.from_numpy(dets).contiguous()
         indata_list = [dets_t]
         indata_dict = {'iou_threshold': float(iou_threshold)}
         matched = ext_module.nms_match(*indata_list, **indata_dict)

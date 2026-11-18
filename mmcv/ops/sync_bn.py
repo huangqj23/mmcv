@@ -51,6 +51,8 @@ class SyncBatchNormFunction(Function):
                    input, (torch.HalfTensor, torch.FloatTensor,
                            torch.cuda.HalfTensor, torch.cuda.FloatTensor)), \
                f'only support Half or Float Tensor, but {input.type()}'
+        # the kernels read raw memory as dense tensors
+        input = input.contiguous()
         output = torch.zeros_like(input)
         input3d = input.flatten(start_dim=2)
         output3d = output.view_as(input3d)
@@ -132,6 +134,7 @@ class SyncBatchNormFunction(Function):
     @once_differentiable
     def backward(self, grad_output: torch.Tensor) -> tuple:
         norm, std, weight = self.saved_tensors
+        grad_output = grad_output.contiguous()
         grad_weight = torch.zeros_like(weight)
         grad_bias = torch.zeros_like(weight)
         grad_input = torch.zeros_like(grad_output)

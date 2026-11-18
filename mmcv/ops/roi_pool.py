@@ -33,6 +33,8 @@ class RoIPoolFunction(Function):
         ctx.output_size = _pair(output_size)
         ctx.spatial_scale = spatial_scale
         ctx.input_shape = input.size()
+        # the kernels read raw memory as dense tensors
+        input, rois = input.contiguous(), rois.contiguous()
 
         assert rois.size(1) == 5, 'RoI must be (idx, x1, y1, x2, y2)!'
 
@@ -59,6 +61,7 @@ class RoIPoolFunction(Function):
             ctx: Any, grad_output: torch.Tensor
     ) -> Tuple[torch.Tensor, None, None, None]:
         rois, argmax = ctx.saved_tensors
+        grad_output = grad_output.contiguous()
         grad_input = grad_output.new_zeros(ctx.input_shape)
 
         ext_module.roi_pool_backward(

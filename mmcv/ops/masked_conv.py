@@ -44,6 +44,8 @@ class MaskedConv2dFunction(Function):
             raise ValueError(
                 'Stride could not only be 1 in masked_conv2d currently.')
         out_channel, in_channel, kernel_h, kernel_w = weight.size()
+        # the kernels read raw memory as dense tensors
+        features = features.contiguous()
 
         batch_size = features.size(0)
         out_h = int(
