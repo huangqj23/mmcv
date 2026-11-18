@@ -233,9 +233,21 @@ def test_masked_conv():
         MaskedConv2d(2, 4, 3, 1, 1).cuda(), (x, mask), 'MMCVMaskedConv2d')
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_psa_mask():
+@pytest.mark.parametrize('psa_type', ['collect', 'distribute'])
+def test_psa_mask(psa_type):
+    # exported as standard ops (pad / slice / reshape), so TensorRT and
+    # OpenVINO run it without a plugin
+    onnxruntime = pytest.importorskip('onnxruntime')
     from mmcv.ops import PSAMask
-    input = torch.rand(4, 16, 8, 8).cuda()
-    model = PSAMask('collect', (4, 4)).cuda()
-    _test_symbolic(model, input, 'MMCVPSAMask')
+    from mmcv.ops.psa_mask import PSAMaskFunction
+    input = torch.rand(2, 63, 6, 10)
+    model = PSAMask(psa_type, (7, 9))
+    with torch.no_grad():
+        torch.onnx.export(model, input, onnx_file, opset_version=17)
+    onnx_model = onnx.load(onnx_file)
+    assert all(n.domain in ('', 'ai.onnx') for n in onnx_model.graph.node)
+    sess = onnxruntime.InferenceSession(
+        onnx_file, providers=['CPUExecutionProvider'])
+    out = sess.run(None, {sess.get_inputs()[0].name: input.numpy()})[0]
+    ref = PSAMaskFunction.apply(input, model.psa_type_enum, (7, 9))
+    assert np.array_equal(out, ref.numpy())

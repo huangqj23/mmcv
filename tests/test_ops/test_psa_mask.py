@@ -124,3 +124,35 @@ class TestPSAMask:
         test_output = test_output.detach().cpu().numpy()
         assert np.allclose(test_output, output_distribute)
         assert test_output.shape == output_distribute.shape
+
+
+@pytest.mark.parametrize('device', [
+    'cpu',
+    pytest.param(
+        'cuda',
+        marks=pytest.mark.skipif(
+            not IS_CUDA_AVAILABLE, reason='requires CUDA support'))
+])
+@pytest.mark.parametrize('psa_type', [0, 1])
+@pytest.mark.parametrize(
+    'h, w, h_mask, w_mask',
+    [
+        (8, 8, 4, 4),  # the shapes of the tests above
+        (6, 10, 7, 9),  # window smaller than the map
+        (4, 5, 9, 11),  # window covers more than the map
+        (5, 7, 13, 3),  # mixed
+        (1, 3, 3, 5),  # a single row
+    ])
+def test_psa_mask_pytorch(device, psa_type, h, w, h_mask, w_mask):
+    """The plain-PyTorch PSAMask (export path) equals the kernels."""
+    from mmcv.ops.psa_mask import PSAMaskFunction, psa_mask_pytorch
+    torch.manual_seed(0)
+    x = torch.randn(
+        2, h_mask * w_mask, h, w, device=device, requires_grad=True)
+    ref = PSAMaskFunction.apply(x, psa_type, (h_mask, w_mask))
+    out = psa_mask_pytorch(x, psa_type, (h_mask, w_mask))
+    assert torch.equal(out, ref)
+    grad = torch.randn_like(ref)
+    grad_ref, = torch.autograd.grad(ref, x, grad)
+    grad_out, = torch.autograd.grad(out, x, grad)
+    assert torch.equal(grad_out, grad_ref)

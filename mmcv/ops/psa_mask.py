@@ -2,6 +2,7 @@
 from typing import Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.autograd import Function
 from torch.nn.modules.utils import _pair
@@ -10,17 +11,59 @@ from ..utils import ext_loader
 
 ext_module = ext_loader.load_ext('_ext',
                                  ['psamask_forward', 'psamask_backward'])
+EXT_BUILT = ext_loader.check_ops_exist()
+
+
+def _rel_to_abs(x: torch.Tensor, size: int, half: int) -> torch.Tensor:
+    """Relative to absolute positions along the last axis.
+
+    ``x[..., i, a]`` holds offset ``a - half`` from position ``i``; returns
+    ``out[..., i, j] = x[..., i, j - i + half]``, 0 where that offset is not
+    in ``x``. Only pad / slice / reshape, so it exports to plain ONNX ops
+    without index tensors.
+    """
+    if size == 1:
+        return x[..., half:half + 1] if 0 <= half < x.shape[-1] else \
+            x.new_zeros(x.shape[:-1] + (1, ))
+    # place offsets on the full range [-(size - 1), size - 1]
+    left = size - 1 - half
+    if left < 0:  # offsets beyond the map
+        x = x[..., -left:]
+        left = 0
+    right = 2 * size - 1 - left - x.shape[-1]
+    if right < 0:
+        x = x[..., :right]
+        right = 0
+    x = F.pad(x, (left, right))
+    # x[i, j - i + size - 1] sits at flat index size - 1 + i * (2 size - 2) + j
+    flat = x.flatten(-2)[..., size - 1:size - 1 + size * (2 * size - 2)]
+    return flat.unflatten(-1, (size, 2 * size - 2))[..., :size]
+
+
+def psa_mask_pytorch(input: torch.Tensor, psa_type: int,
+                     mask_size) -> torch.Tensor:
+    """PSAMask in plain PyTorch: same output as the CPU / CUDA kernels.
+
+    Used for ONNX export (TensorRT and OpenVINO get standard ops instead of
+    ``mmcv::MMCVPSAMask``), under ``torch.compile`` and without the compiled
+    extension.
+    """
+    n, c, h, w = input.shape
+    h_mask, w_mask = _pair(mask_size)
+    assert c == h_mask * w_mask
+    x = input.view(n, h_mask, w_mask, h, w)
+    # rows: (n, w_mask, w, h, h_mask) -> (n, w_mask, w, h, h')
+    x = _rel_to_abs(x.permute(0, 2, 4, 3, 1), h, (h_mask - 1) // 2)
+    # columns: (n, h, h', w, w_mask) -> (n, h, h', w, w')
+    x = _rel_to_abs(x.permute(0, 3, 4, 2, 1), w, (w_mask - 1) // 2)
+    if psa_type == 0:  # collect: out[n, h' * w + w', h, w]
+        x = x.permute(0, 2, 4, 1, 3)
+    else:  # distribute: out[n, h * w + w, h', w']
+        x = x.permute(0, 1, 3, 2, 4)
+    return x.reshape(n, h * w, h, w)
 
 
 class PSAMaskFunction(Function):
-
-    @staticmethod
-    def symbolic(g, input, psa_type, mask_size):
-        return g.op(
-            'mmcv::MMCVPSAMask',
-            input,
-            psa_type_i=psa_type,
-            mask_size_i=mask_size)
 
     @staticmethod
     def forward(ctx, input: torch.Tensor, psa_type: str,
@@ -72,7 +115,11 @@ class PSAMaskFunction(Function):
         return grad_input, None, None, None
 
 
-psa_mask = PSAMaskFunction.apply
+def psa_mask(input: torch.Tensor, psa_type: int, mask_size) -> torch.Tensor:
+    if (not EXT_BUILT or torch.onnx.is_in_onnx_export()
+            or torch.compiler.is_compiling()):
+        return psa_mask_pytorch(input, psa_type, mask_size)
+    return PSAMaskFunction.apply(input, psa_type, mask_size)
 
 
 class PSAMask(nn.Module):
