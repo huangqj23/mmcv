@@ -12,8 +12,12 @@ def NEG_INF_DIAG(n: int, device: torch.device) -> torch.Tensor:
 
     The diagonal are all "-inf". This is for avoiding calculating the
     overlapped element in the Criss-Cross twice.
+
+    Built with ``eye`` + ``masked_fill`` instead of ``torch.diag``, which the
+    ONNX exporters do not support; the result is bit-identical.
     """
-    return torch.diag(torch.tensor(float('-inf')).to(device).repeat(n), 0)
+    eye = torch.eye(n, dtype=torch.bool, device=device)
+    return torch.zeros(n, n, device=device).masked_fill(eye, float('-inf'))
 
 
 @MODELS.register_module()
