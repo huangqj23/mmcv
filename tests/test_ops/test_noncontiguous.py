@@ -33,11 +33,16 @@ def check(fn, *inputs):
     out = fn(*inputs)
     floats = [t for t in inputs if t.requires_grad]
     expanded = torch.full((), GRAD_VALUE).to(out).expand_as(out)
+    # allow_unused: no gradient flows to e.g. the rois of RoIAlign
     grad_expanded = torch.autograd.grad(
-        out, floats, expanded, retain_graph=True)
-    grad_dense = torch.autograd.grad(out, floats, torch.full_like(out, 1.7))
+        out, floats, expanded, retain_graph=True, allow_unused=True)
+    grad_dense = torch.autograd.grad(
+        out, floats, torch.full_like(out, GRAD_VALUE), allow_unused=True)
+    assert any(g is not None for g in grad_dense)
     for a, b in zip(grad_expanded, grad_dense):
-        assert torch.allclose(a, b, rtol=1e-5, atol=1e-5)
+        assert (a is None) == (b is None)
+        if a is not None:
+            assert torch.allclose(a, b, rtol=1e-5, atol=1e-5)
 
 
 def psa_mask(device):
