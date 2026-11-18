@@ -9,7 +9,7 @@ void SigmoidFocalLossForwardCUDAKernelLauncher(Tensor input, Tensor target,
                                                const float alpha) {
   int output_size = output.numel();
   int num_classes = input.size(1);
-  AT_ASSERTM(target.max().item<int64_t>() <= (int64_t)num_classes,
+  TORCH_CHECK(target.max().item<int64_t>() <= (int64_t)num_classes,
              "target label should smaller or equal than num classes");
   at::cuda::CUDAGuard device_guard(input.device());
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -54,7 +54,7 @@ void SoftmaxFocalLossForwardCUDAKernelLauncher(Tensor softmax, Tensor target,
   int output_size = output.numel();
   int num_classes = softmax.size(1);
 
-  AT_ASSERTM(target.max().item<int64_t>() <= (int64_t)num_classes,
+  TORCH_CHECK(target.max().item<int64_t>() <= (int64_t)num_classes,
              "target label should smaller or equal than num classes");
   at::cuda::CUDAGuard device_guard(softmax.device());
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();

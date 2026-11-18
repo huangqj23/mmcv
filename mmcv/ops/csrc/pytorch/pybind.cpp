@@ -161,7 +161,8 @@ void psamask_backward(Tensor grad_output, const Tensor grad_input,
                       const int w_feature, const int h_mask, const int w_mask,
                       const int half_h_mask, const int half_w_mask);
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {  m.def("get_compiler_version", &get_compiler_version, "get_compiler_version");
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("get_compiler_version", &get_compiler_version, "get_compiler_version");
   m.def("get_compiling_cuda_version", &get_compiling_cuda_version,
         "get_compiling_cuda_version");
   m.def("carafe_naive_forward", &carafe_naive_forward, "carafe_naive_forward",

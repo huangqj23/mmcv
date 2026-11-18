@@ -14,7 +14,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include <THC/THCAtomics.cuh>
+#include <ATen/cuda/Atomic.cuh>
 #include <vector>
 
 #include "ms_deform_attn_cuda_kernel.cuh"
@@ -212,22 +212,22 @@ at::Tensor ms_deform_attn_cuda_forward(const at::Tensor &value,
                                        const at::Tensor &sampling_loc,
                                        const at::Tensor &attn_weight,
                                        const int im2col_step) {
-  AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
-  AT_ASSERTM(spatial_shapes.is_contiguous(),
+  TORCH_CHECK(value.is_contiguous(), "value tensor has to be contiguous");
+  TORCH_CHECK(spatial_shapes.is_contiguous(),
              "spatial_shapes tensor has to be contiguous");
-  AT_ASSERTM(level_start_index.is_contiguous(),
+  TORCH_CHECK(level_start_index.is_contiguous(),
              "level_start_index tensor has to be contiguous");
-  AT_ASSERTM(sampling_loc.is_contiguous(),
+  TORCH_CHECK(sampling_loc.is_contiguous(),
              "sampling_loc tensor has to be contiguous");
-  AT_ASSERTM(attn_weight.is_contiguous(),
+  TORCH_CHECK(attn_weight.is_contiguous(),
              "attn_weight tensor has to be contiguous");
 
-  AT_ASSERTM(value.is_cuda(), "value must be a CUDA tensor");
-  AT_ASSERTM(spatial_shapes.is_cuda(), "spatial_shapes must be a CUDA tensor");
-  AT_ASSERTM(level_start_index.is_cuda(),
+  TORCH_CHECK(value.is_cuda(), "value must be a CUDA tensor");
+  TORCH_CHECK(spatial_shapes.is_cuda(), "spatial_shapes must be a CUDA tensor");
+  TORCH_CHECK(level_start_index.is_cuda(),
              "level_start_index must be a CUDA tensor");
-  AT_ASSERTM(sampling_loc.is_cuda(), "sampling_loc must be a CUDA tensor");
-  AT_ASSERTM(attn_weight.is_cuda(), "attn_weight must be a CUDA tensor");
+  TORCH_CHECK(sampling_loc.is_cuda(), "sampling_loc must be a CUDA tensor");
+  TORCH_CHECK(attn_weight.is_cuda(), "attn_weight must be a CUDA tensor");
 
   const int batch = value.size(0);
   const int spatial_size = value.size(1);
@@ -241,7 +241,7 @@ at::Tensor ms_deform_attn_cuda_forward(const at::Tensor &value,
 
   const int im2col_step_ = std::min(batch, im2col_step);
 
-  AT_ASSERTM(batch % im2col_step_ == 0, "batch(%d) must divide im2col_step(%d)",
+  TORCH_CHECK(batch % im2col_step_ == 0, "batch(%d) must divide im2col_step(%d)",
              batch, im2col_step_);
 
   auto output =
@@ -282,25 +282,25 @@ void ms_deform_attn_cuda_backward(
     const at::Tensor &attn_weight, const at::Tensor &grad_output,
     at::Tensor &grad_value, at::Tensor &grad_sampling_loc,
     at::Tensor &grad_attn_weight, const int im2col_step) {
-  AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
-  AT_ASSERTM(spatial_shapes.is_contiguous(),
+  TORCH_CHECK(value.is_contiguous(), "value tensor has to be contiguous");
+  TORCH_CHECK(spatial_shapes.is_contiguous(),
              "spatial_shapes tensor has to be contiguous");
-  AT_ASSERTM(level_start_index.is_contiguous(),
+  TORCH_CHECK(level_start_index.is_contiguous(),
              "level_start_index tensor has to be contiguous");
-  AT_ASSERTM(sampling_loc.is_contiguous(),
+  TORCH_CHECK(sampling_loc.is_contiguous(),
              "sampling_loc tensor has to be contiguous");
-  AT_ASSERTM(attn_weight.is_contiguous(),
+  TORCH_CHECK(attn_weight.is_contiguous(),
              "attn_weight tensor has to be contiguous");
-  AT_ASSERTM(grad_output.is_contiguous(),
+  TORCH_CHECK(grad_output.is_contiguous(),
              "grad_output tensor has to be contiguous");
 
-  AT_ASSERTM(value.is_cuda(), "value must be a CUDA tensor");
-  AT_ASSERTM(spatial_shapes.is_cuda(), "spatial_shapes must be a CUDA tensor");
-  AT_ASSERTM(level_start_index.is_cuda(),
+  TORCH_CHECK(value.is_cuda(), "value must be a CUDA tensor");
+  TORCH_CHECK(spatial_shapes.is_cuda(), "spatial_shapes must be a CUDA tensor");
+  TORCH_CHECK(level_start_index.is_cuda(),
              "level_start_index must be a CUDA tensor");
-  AT_ASSERTM(sampling_loc.is_cuda(), "sampling_loc must be a CUDA tensor");
-  AT_ASSERTM(attn_weight.is_cuda(), "attn_weight must be a CUDA tensor");
-  AT_ASSERTM(grad_output.is_cuda(), "grad_output must be a CUDA tensor");
+  TORCH_CHECK(sampling_loc.is_cuda(), "sampling_loc must be a CUDA tensor");
+  TORCH_CHECK(attn_weight.is_cuda(), "attn_weight must be a CUDA tensor");
+  TORCH_CHECK(grad_output.is_cuda(), "grad_output must be a CUDA tensor");
 
   const int batch = value.size(0);
   const int spatial_size = value.size(1);
@@ -314,7 +314,7 @@ void ms_deform_attn_cuda_backward(
 
   const int im2col_step_ = std::min(batch, im2col_step);
 
-  AT_ASSERTM(batch % im2col_step_ == 0, "batch(%d) must divide im2col_step(%d)",
+  TORCH_CHECK(batch % im2col_step_ == 0, "batch(%d) must divide im2col_step(%d)",
              batch, im2col_step_);
 
   const int batch_n = im2col_step_;
