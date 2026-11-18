@@ -4,6 +4,7 @@
 from mmengine.utils.dl_utils import collect_env as mmengine_collect_env
 
 import mmcv
+from .ext_loader import check_ops_exist
 
 
 def collect_env():
@@ -34,13 +35,13 @@ def collect_env():
 
     env_info['MMCV'] = mmcv.__version__
 
-    try:
+    # mmcv.ops imports without the compiled extension, so check for it
+    if check_ops_exist():
         from mmcv.ops import get_compiler_version, get_compiling_cuda_version
-    except ModuleNotFoundError:
-        env_info['MMCV Compiler'] = 'n/a'
-        env_info['MMCV CUDA Compiler'] = 'n/a'
-    else:
         env_info['MMCV Compiler'] = get_compiler_version()
         env_info['MMCV CUDA Compiler'] = get_compiling_cuda_version()
+    else:
+        env_info['MMCV Compiler'] = 'n/a'
+        env_info['MMCV CUDA Compiler'] = 'n/a'
 
     return env_info
