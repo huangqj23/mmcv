@@ -7,66 +7,39 @@ This folder contains all non-python code for MMCV custom ops. Please follow the 
 ```folder
 .
 ├── common
-│   ├── box_iou_rotated_utils.hpp
-│   ├── parrots_cpp_helper.hpp
-│   ├── parrots_cuda_helper.hpp
 │   ├── pytorch_cpp_helper.hpp
 │   ├── pytorch_cuda_helper.hpp
 │   ├── pytorch_device_registry.hpp
-│   ├── cuda
-│   │   ├── common_cuda_helper.hpp
-│   │   ├── parrots_cudawarpfunction.cuh
-│   │   ├── ...
-│   │   └── ops_cuda_kernel.cuh
-|   ├── mps
-│   │   ├── MPSLibrary.h
-│   │   ├── ...
-│   │   └── MPSUtils.h
-|   ├── mlu
-│   │   └── ...
-|   └── utils
-│   │   └── ...
-├── parrots
-│   ├── ...
-│   ├── ops.cpp
-│   ├── ops_parrots.cpp
-│   └── ops_pytorch.h
+│   └── cuda
+│       ├── common_cuda_helper.hpp
+│       ├── ...
+│       └── ops_cuda_kernel.cuh
 └── pytorch
-    ├── info.cpp
-    ├── pybind.cpp
-    ├── ...
-    ├── ops.cpp
-    ├── cuda
-    │   ├── ...
-    │   └── ops_cuda.cu
-    ├── cpu
-    │   ├── ...
-    │   └── ops.cpp
-    ├── mps
-    │   ├── ...
-    |   └── op_mps.mm
-    └── mlu
-        ├── ...
-        └── op_mlu.cpp
+    ├── info.cpp
+    ├── pybind.cpp
+    ├── ...
+    ├── ops.cpp
+    ├── cuda
+    │   ├── ...
+    │   └── ops_cuda.cu
+    └── cpu
+        ├── ...
+        └── ops.cpp
 ```
 
 ## Components
 
+This fork (branch `nv`) builds for NVIDIA GPUs and CPU only.
+
 - `common`: This directory contains all tools and shared codes.
-  - `cuda`: The cuda kernels which can be shared by all backends. **HIP** kernel is also here since they have similar syntax.
-  - `mps`: The tools used to support MPS ops. **NOTE** that MPS support is **experimental**.
-  - `mlu`: The MLU kernels used to support [Cambricon](https://www.cambricon.com/) device.
-  - `utils`: The kernels and utils of spconv.
-- `parrots`: **Parrots** is a deep learning frame for model training and inference. Parrots custom ops are placed in this directory.
+  - `cuda`: The cuda kernels.
 - `pytorch`: **PyTorch** custom ops are supported by binding C++ to Python with **pybind11**. The ops implementation and binding codes are placed in this directory.
   - `cuda`: This directory contains cuda kernel launchers, which feed memory pointers of tensor to the cuda kernel in `common/cuda`. The launchers provide c++ interface of cuda implementation of corresponding custom ops.
   - `cpu`: This directory contain cpu implementations of corresponding custom ops.
-  - `mlu`: This directory contain launchers of each MLU kernels.
-  - `mps`: MPS ops implementation and launchers.
 
 ## How to add new PyTorch ops?
 
-1. (Optional) Add shared kernel in `common` to support special hardware platform.
+1. Add the cuda kernel in `common/cuda`.
 
    ```c++
    // src/common/cuda/new_ops_cuda_kernel.cuh

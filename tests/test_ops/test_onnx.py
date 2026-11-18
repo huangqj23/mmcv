@@ -8,8 +8,6 @@ import torch
 import torch.nn as nn
 
 onnx_file = 'tmp.onnx'
-if torch.__version__ == 'parrots':
-    pytest.skip('not supported in parrots now', allow_module_level=True)
 
 
 @pytest.fixture(autouse=True)
@@ -184,15 +182,6 @@ def _test_symbolic(model, inputs, symbol_name):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_border_align():
-    from mmcv.ops import BorderAlign
-    model = BorderAlign(2)
-    input = torch.rand(1, 8, 2, 2).cuda()
-    boxes = torch.rand(1, 4, 4).cuda()
-    _test_symbolic(model, (input, boxes), 'MMCVBorderAlign')
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
 def test_carafe():
     from mmcv.ops import CARAFENaive
     feat = torch.randn(2, 64, 3, 3, device='cuda').double()
@@ -245,43 +234,8 @@ def test_masked_conv():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_pr_roi_pool():
-    from mmcv.ops import PrRoIPool
-    pool_h = 2
-    pool_w = 2
-    spatial_scale = 1.0
-    x = torch.tensor([[[[1., 2.], [3., 4.]]]], device='cuda')
-    rois = torch.tensor([[0., 0., 0., 1., 1.]], device='cuda')
-    model = PrRoIPool((pool_h, pool_w), spatial_scale).cuda()
-    _test_symbolic(model, (x, rois), 'PrRoIPool')
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
 def test_psa_mask():
     from mmcv.ops import PSAMask
     input = torch.rand(4, 16, 8, 8).cuda()
     model = PSAMask('collect', (4, 4)).cuda()
     _test_symbolic(model, input, 'MMCVPSAMask')
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_roi_align_rotated():
-    from mmcv.ops import RoIAlignRotated
-    pool_h = 2
-    pool_w = 2
-    spatial_scale = 1.0
-    sampling_ratio = 2
-    x = torch.tensor([[[[1., 2.], [3., 4.]]]], device='cuda')
-    rois = torch.tensor([[0., 0.5, 0.5, 1., 1., 0]], device='cuda')
-    model = RoIAlignRotated((pool_h, pool_w), spatial_scale,
-                            sampling_ratio).cuda()
-    _test_symbolic(model, (x, rois), 'MMCVRoIAlignRotated')
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_roi_feaeture_align():
-    from mmcv.ops import rotated_feature_align
-    wrapped_model = WrapFunction(rotated_feature_align)
-    feature = torch.rand(1, 1, 2, 2, device='cuda')
-    bbox = torch.rand(1, 2, 2, 5, device='cuda')
-    _test_symbolic(wrapped_model, (feature, bbox), 'MMCVRotatedFeatureAlign')

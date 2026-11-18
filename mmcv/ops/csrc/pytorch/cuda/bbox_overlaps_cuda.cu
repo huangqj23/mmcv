@@ -3,7 +3,6 @@
 #include "pytorch_cuda_helper.hpp"
 
 // Disable fp16 on ROCm device
-#ifndef MMCV_WITH_HIP
 #if __CUDA_ARCH__ >= 530
 template <>
 __global__ void bbox_overlaps_cuda_kernel<at::Half>(
@@ -17,7 +16,6 @@ __global__ void bbox_overlaps_cuda_kernel<at::Half>(
 }
 
 #endif  // __CUDA_ARCH__ >= 530
-#endif  // MMCV_WITH_HIP
 
 void BBoxOverlapsCUDAKernelLauncher(const Tensor bboxes1, const Tensor bboxes2,
                                     Tensor ious, const int mode,

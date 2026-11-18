@@ -4,17 +4,9 @@
 
 #include <ATen/cuda/DeviceUtils.cuh>
 
-#ifdef MMCV_USE_PARROTS
-#include "parrots_cuda_helper.hpp"
-#else
 #include "pytorch_cuda_helper.hpp"
-#endif
 
-#ifdef MMCV_WITH_HIP
-#define WARP_SIZE 64
-#else
 #define WARP_SIZE 32
-#endif
 #define THREADS_PER_PIXEL 32
 #define MAX_SHARED_MEMORY 49152
 #define MAX_SHARED_SCALAR_T 6144  // 49152 / 8 = 6144
@@ -31,7 +23,6 @@ __device__ inline int Loc2Index(const int n, const int c, const int h,
   int index = w + (h + (c + n * channel_num) * height) * width;
   return index;
 }
-#ifndef MMCV_WITH_HIP
 /* TODO: move this to a common place */
 template <typename scalar_t>
 __device__ inline scalar_t min(scalar_t a, scalar_t b) {
@@ -42,28 +33,18 @@ template <typename scalar_t>
 __device__ inline scalar_t max(scalar_t a, scalar_t b) {
   return a > b ? a : b;
 }
-#endif
 template <typename scalar_t>
 __device__ __forceinline__ scalar_t warpReduceSum(scalar_t val) {
   for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
-#ifdef MMCV_WITH_HIP
-    val += __shfl_down(val, offset);
-#else
     val += __shfl_down_sync(FULL_MASK, val, offset);
-#endif
   return val;
 }
 
 template <>
 __device__ __forceinline__ phalf warpReduceSum(phalf val) {
   for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2)
-#ifdef MMCV_WITH_HIP
-    // Using PyTorch's macro for half support
-    __PHALF(val) += WARP_SHFL_DOWN(val, offset);
-#else
     __PHALF(val) +=
         __shfl_down_sync(FULL_MASK, __PHALF(val).operator __half(), offset);
-#endif
   return val;
 }
 
@@ -319,11 +300,7 @@ __global__ void CARAFEBackward_Mask(const int num_kernels,
       output_val += top_diff[top_id] * bottom_data[bottom_id];
     }
   }
-#ifdef MMCV_WITH_HIP
-  __syncthreads();
-#else
   __syncwarp();
-#endif
   output_val = warpReduceSum(output_val);
   if (lane_id == 0) {
     const int mask_id =

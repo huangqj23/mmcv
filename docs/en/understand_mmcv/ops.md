@@ -2,65 +2,28 @@
 
 We implement common ops used in detection, segmentation, etc.
 
-| Device                       | CPU | CUDA | MLU | MPS | Ascend |
-| ---------------------------- | --- | ---- | --- | --- | ------ |
-| ActiveRotatedFilter          | √   | √    |     |     | √      |
-| AssignScoreWithK             |     | √    |     |     |        |
-| BallQuery                    |     | √    | √   |     | √      |
-| BBoxOverlaps                 |     | √    | √   | √   | √      |
-| BorderAlign                  |     | √    |     |     |        |
-| BoxIouRotated                | √   | √    | √   |     | √      |
-| BoxIouQuadri                 | √   | √    |     |     |        |
-| CARAFE                       |     | √    | √   |     |        |
-| ChamferDistance              |     | √    |     |     | √      |
-| CrissCrossAttention          |     | √    |     |     |        |
-| ContourExpand                | √   |      |     |     |        |
-| ConvexIoU                    |     | √    |     |     |        |
-| CornerPool                   |     | √    |     |     |        |
-| Correlation                  |     | √    |     |     |        |
-| Deformable Convolution v1/v2 | √   | √    | √   |     | √      |
-| Deformable RoIPool           |     | √    | √   |     | √      |
-| DiffIoURotated               |     | √    | √   |     |        |
-| DynamicScatter               |     | √    | √   |     |        |
-| FurthestPointSample          |     | √    |     |     |        |
-| FurthestPointSampleWithDist  |     | √    |     |     |        |
-| FusedBiasLeakyrelu           |     | √    |     |     | √      |
-| GatherPoints                 |     | √    |     |     | √      |
-| GroupPoints                  |     | √    |     |     |        |
-| Iou3d                        |     | √    | √   |     |        |
-| KNN                          |     | √    |     |     |        |
-| MaskedConv                   |     | √    | √   |     | √      |
-| MergeCells                   |     | √    |     |     |        |
-| MinAreaPolygon               |     | √    |     |     |        |
-| ModulatedDeformConv2d        | √   | √    | √   |     | √      |
-| MultiScaleDeformableAttn     |     | √    | √   |     | √      |
-| NMS                          | √   | √    | √   |     | √      |
-| NMSRotated                   | √   | √    | √   |     | √      |
-| NMSQuadri                    | √   | √    |     |     |        |
-| PixelGroup                   | √   |      |     |     |        |
-| PointsInBoxes                | √   | √    |     |     |        |
-| PointsInPolygons             |     | √    |     |     | √      |
-| PSAMask                      | √   | √    | √   |     | √      |
-| RotatedFeatureAlign          | √   | √    | √   |     | √      |
-| RoIPointPool3d               |     | √    | √   |     |        |
-| RoIPool                      |     | √    | √   |     | √      |
-| RoIAlignRotated              | √   | √    | √   |     | √      |
-| RiRoIAlignRotated            |     | √    |     |     |        |
-| RoIAlign                     | √   | √    | √   |     | √      |
-| RoIAwarePool3d               |     | √    | √   |     |        |
-| SAConv2d                     |     | √    |     |     |        |
-| SigmoidFocalLoss             |     | √    | √   |     | √      |
-| SoftmaxFocalLoss             |     | √    |     |     | √      |
-| SoftNMS                      |     | √    |     |     |        |
-| Sparse Convolution           |     | √    | √   |     |        |
-| Synchronized BatchNorm       |     | √    |     |     |        |
-| ThreeInterpolate             |     | √    |     |     |        |
-| ThreeNN                      |     | √    | √   |     |        |
-| TINShift                     |     | √    | √   |     |        |
-| UpFirDn2d                    |     | √    |     |     |        |
-| Voxelization                 | √   | √    | √   |     | √      |
-| PrRoIPool                    |     | √    |     |     |        |
-| BezierAlign                  | √   | √    |     |     |        |
-| BiasAct                      |     | √    |     |     |        |
-| FilteredLrelu                |     | √    |     |     |        |
-| Conv2dGradfix                |     | √    |     |     |        |
+This fork (branch `nv`) supports NVIDIA GPUs and CPU only. Ops that no OpenMMLab detection / segmentation / classification code uses, and the five ops under NVIDIA's non-commercial license, were removed; they are still in the tag `pre-slim`. CrissCrossAttention, CornerPool, MergeCells and PointSample are pure PyTorch and work without the compiled extension; MultiScaleDeformableAttn falls back to its PyTorch version on CPU, without the extension, and during ONNX export.
+
+| Device                       | CPU | CUDA |
+| ---------------------------- | --- | ---- |
+| BBoxOverlaps                 | √   | √    |
+| CARAFE                       |     | √    |
+| CornerPool                   | √   | √    |
+| CrissCrossAttention          | √   | √    |
+| Deformable Convolution v1/v2 | √   | √    |
+| Deformable RoIPool           |     | √    |
+| MaskedConv                   |     | √    |
+| MergeCells                   | √   | √    |
+| ModulatedDeformConv2d        | √   | √    |
+| MultiScaleDeformableAttn     | √   | √    |
+| NMS                          | √   | √    |
+| NMSMatch                     | √   |      |
+| PointSample / SimpleRoIAlign | √   | √    |
+| PSAMask                      | √   | √    |
+| RoIAlign                     | √   | √    |
+| RoIPool                      |     | √    |
+| SAConv2d                     | √   | √    |
+| SigmoidFocalLoss             |     | √    |
+| SoftmaxFocalLoss             |     | √    |
+| SoftNMS                      | √   |      |
+| Synchronized BatchNorm       |     | √    |
