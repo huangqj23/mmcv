@@ -34,7 +34,10 @@ def _rel_to_abs(x: torch.Tensor, size: int, half: int) -> torch.Tensor:
     if right < 0:
         x = x[..., :right]
         right = 0
-    x = F.pad(x, (left, right))
+    # contiguous input: eager pad returns a contiguous tensor anyway, but
+    # under torch.compile the padded copy of a permuted tensor can keep the
+    # permuted layout, and the flatten below would become an invalid view
+    x = F.pad(x.contiguous(), (left, right))
     # x[i, j - i + size - 1] sits at flat index size - 1 + i * (2 size - 2) + j
     flat = x.flatten(-2)[..., size - 1:size - 1 + size * (2 * size - 2)]
     return flat.unflatten(-1, (size, 2 * size - 2))[..., :size]
