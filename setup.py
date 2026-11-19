@@ -30,7 +30,13 @@ def get_version():
     version_file = 'mmcv/version.py'
     with open(version_file, encoding='utf-8') as f:
         exec(compile(f.read(), version_file, 'exec'))
-    return locals()['__version__']
+    version = locals()['__version__']
+    # e.g. MMCV_LOCAL_VERSION=cu124.torch2.6 gives 2.2.0+nv.1.cu124.torch2.6,
+    # so wheels built for different torch / CUDA versions get distinct names
+    local = os.getenv('MMCV_LOCAL_VERSION')
+    if local:
+        version += ('.' if '+' in version else '+') + local
+    return version
 
 
 def parse_requirements(fname='requirements/runtime.txt', with_version=True):

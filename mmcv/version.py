@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-__version__ = '2.2.0'
+# nv branch: upstream 2.2.0 plus local release N (2.2.0+nv.N)
+__version__ = '2.2.0+nv.1'
 
 
 def parse_version_info(version_str: str, length: int = 4) -> tuple:
@@ -30,6 +31,7 @@ def parse_version_info(version_str: str, length: int = 4) -> tuple:
     return tuple(release)
 
 
-version_info = tuple(int(x) for x in __version__.split('.')[:3])
+version_info = tuple(
+    int(x) for x in __version__.split('+')[0].split('.')[:3])
 
 __all__ = ['__version__', 'version_info', 'parse_version_info']
