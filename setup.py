@@ -153,7 +153,8 @@ def get_extensions():
         extra_compile_args = {'cxx': ['-std=c++17']}
     else:
         extra_compile_args = {'cxx': ['/std:c++17']}
-    op_files = glob.glob('./mmcv/ops/csrc/pytorch/*.cpp') +         glob.glob('./mmcv/ops/csrc/pytorch/cpu/*.cpp')
+    op_files = glob.glob('./mmcv/ops/csrc/pytorch/*.cpp') + \
+        glob.glob('./mmcv/ops/csrc/pytorch/cpu/*.cpp')
 
     # NVIDIA GPUs and CPU only. FORCE_CUDA=1 compiles the CUDA kernels on a
     # machine without a GPU (CI, image builds).
@@ -164,7 +165,8 @@ def get_extensions():
         # on Windows the compiler picks the standard by itself
         if platform.system() != 'Windows':
             extra_compile_args['nvcc'] += ['-std=c++17']
-        op_files += glob.glob('./mmcv/ops/csrc/pytorch/cuda/*.cu') +             glob.glob('./mmcv/ops/csrc/pytorch/cuda/*.cpp')
+        op_files += glob.glob('./mmcv/ops/csrc/pytorch/cuda/*.cu') + \
+            glob.glob('./mmcv/ops/csrc/pytorch/cuda/*.cpp')
         extension = CUDAExtension
         include_dirs = [
             os.path.abspath('./mmcv/ops/csrc/pytorch'),
