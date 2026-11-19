@@ -12,6 +12,8 @@ from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair, _single
 
 from ..utils import ext_loader
+from . import deform_conv as _deform_conv
+from .deform_conv import deform_conv2d_pytorch, deform_conv_symbolic
 
 
 def _prepare(input, offset, mask, weight, bias):
@@ -100,17 +102,9 @@ class ModulatedDeformConv2dFunction(Function):
     @staticmethod
     def symbolic(g, input, offset, mask, weight, bias, stride, padding,
                  dilation, groups, deform_groups):
-        input_tensors = [input, offset, mask, weight]
-        if bias is not None:
-            input_tensors.append(bias)
-        return g.op(
-            'mmcv::MMCVModulatedDeformConv2d',
-            *input_tensors,
-            stride_i=stride,
-            padding_i=padding,
-            dilation_i=dilation,
-            groups_i=groups,
-            deform_groups_i=deform_groups)
+        return deform_conv_symbolic(g, input, weight, offset, bias, mask,
+                                    stride, padding, dilation, groups,
+                                    deform_groups)
 
     @staticmethod
     def forward(ctx,
@@ -152,10 +146,14 @@ def modulated_deform_conv2d(input: torch.Tensor,
                             groups: int = 1,
                             deform_groups: int = 1) -> torch.Tensor:
     if torch.onnx.is_in_onnx_export():
-        return ModulatedDeformConv2dFunction.apply(input, offset, mask, weight,
-                                                   bias, stride, padding,
-                                                   dilation, groups,
-                                                   deform_groups)
+        # see mmcv.ops.deform_conv.ONNX_EXPORT_MODE
+        if _deform_conv.ONNX_EXPORT_MODE == 'deform_conv':
+            return ModulatedDeformConv2dFunction.apply(
+                input, offset, mask, weight, bias, stride, padding, dilation,
+                groups, deform_groups)
+        return deform_conv2d_pytorch(input, offset, weight, mask, bias,
+                                     stride, padding, dilation, groups,
+                                     deform_groups)
     input, mask, weight, bias = _prepare(input, offset, mask, weight, bias)
     ext_loader.load()
     return torch.ops.mmcv.modulated_deform_conv_forward(

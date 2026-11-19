@@ -14,6 +14,107 @@ from torch.nn.modules.utils import _pair, _single
 
 from ..utils import ext_loader
 
+# How DeformConv2d and ModulatedDeformConv2d export to ONNX:
+# - 'grid_sample' (default): deform_conv2d_pytorch, i.e. GridSample (opset
+#   16) and MatMul. TensorRT, OpenVINO and ONNX Runtime run it, no plugin.
+# - 'deform_conv': one ONNX DeformConv node (opset 19). TensorRT 10 maps it
+#   to its stock ModulatedDeformConv2d plugin (trtexec loads it; an API user
+#   calls initLibNvInferPlugins); OpenVINO 2025.4 and ONNX Runtime 1.23
+#   cannot read it.
+ONNX_EXPORT_MODE = 'grid_sample'
+
+
+def deform_conv2d_pytorch(input: Tensor,
+                          offset: Tensor,
+                          weight: Tensor,
+                          mask: Optional[Tensor] = None,
+                          bias: Optional[Tensor] = None,
+                          stride: Union[int, Tuple[int, ...]] = 1,
+                          padding: Union[int, Tuple[int, ...]] = 0,
+                          dilation: Union[int, Tuple[int, ...]] = 1,
+                          groups: int = 1,
+                          deform_groups: int = 1) -> Tensor:
+    """DCN, and with ``mask`` DCNv2, in plain PyTorch.
+
+    Every kernel point samples the input with ``grid_sample`` (bilinear,
+    zero outside the input, as in the mmcv kernels), and the samples are
+    multiplied with the weight. Needs no compiled ops and exports to
+    standard ONNX ops. The samples take kernel_h * kernel_w times the memory
+    of the input, so this is the export path, not a training path.
+    """
+    stride, padding, dilation = _pair(stride), _pair(padding), _pair(dilation)
+    n, c, h, w = input.shape
+    out_c, _, kh, kw = weight.shape
+    out_h, out_w = offset.shape[-2:]
+    g = deform_groups
+    # sampling positions in input pixels, (n, g, kh, kw, out_h, out_w)
+    offset = offset.view(n, g, kh, kw, 2, out_h, out_w)
+    arange = dict(device=input.device, dtype=input.dtype)
+    ys = torch.arange(out_h, **arange) * stride[0] - padding[0]
+    xs = torch.arange(out_w, **arange) * stride[1] - padding[1]
+    ky = torch.arange(kh, **arange) * dilation[0]
+    kx = torch.arange(kw, **arange) * dilation[1]
+    py = (ys.view(1, 1, 1, 1, -1, 1) + ky.view(1, 1, -1, 1, 1, 1) +
+          offset[:, :, :, :, 0])
+    px = (xs.view(1, 1, 1, 1, 1, -1) + kx.view(1, 1, 1, -1, 1, 1) +
+          offset[:, :, :, :, 1])
+    # grid_sample coordinates (align_corners=False): pixel i is centred at
+    # (2 * i + 1) / size - 1
+    grid = torch.stack([(2 * px + 1) / w - 1, (2 * py + 1) / h - 1], dim=-1)
+    samples = F.grid_sample(
+        input.reshape(n * g, c // g, h, w),
+        grid.view(n * g, kh * kw * out_h, out_w, 2),
+        mode='bilinear',
+        padding_mode='zeros',
+        align_corners=False)
+    samples = samples.view(n, g, c // g, kh * kw, out_h * out_w)
+    if mask is not None:
+        samples = samples * mask.view(n, g, 1, kh * kw, out_h * out_w)
+    # grouped convolution as a batched matrix product
+    samples = samples.reshape(n, groups, c // groups * kh * kw,
+                              out_h * out_w)
+    out = torch.matmul(weight.view(groups, out_c // groups, -1), samples)
+    out = out.view(n, out_c, out_h, out_w)
+    if bias is not None:
+        out = out + bias.view(1, -1, 1, 1)
+    return out
+
+
+def deform_conv_symbolic(g, input, weight, offset, bias, mask, stride,
+                         padding, dilation, groups, deform_groups):
+    """ONNX ``DeformConv`` (opset 19) for DCN and, with ``mask``, DCNv2.
+
+    Used when ``ONNX_EXPORT_MODE == 'deform_conv'``. The offset layout
+    (offset group, kernel row, kernel column, then y and x) and the zero
+    padding outside the input are the same as in the mmcv kernels.
+    """
+    opset = getattr(g, 'opset', None)
+    if opset is None:
+        from torch.onnx._globals import GLOBALS
+        opset = GLOBALS.export_onnx_opset_version
+    if opset < 19:
+        raise RuntimeError(
+            'DeformConv2d and ModulatedDeformConv2d export to ONNX '
+            f'DeformConv, which needs opset_version >= 19 (got {opset})')
+    stride, padding, dilation = _pair(stride), _pair(padding), _pair(dilation)
+    inputs = [input, weight, offset]
+    if mask is not None:
+        if bias is None:
+            from torch.onnx.symbolic_helper import \
+                _optional_input_placeholder_tensor
+            bias = _optional_input_placeholder_tensor(g)
+        inputs += [bias, mask]
+    elif bias is not None:
+        inputs.append(bias)
+    return g.op(
+        'DeformConv',
+        *inputs,
+        dilations_i=list(dilation),
+        group_i=groups,
+        offset_group_i=deform_groups,
+        pads_i=[padding[0], padding[1], padding[0], padding[1]],
+        strides_i=list(stride))
+
 
 def _prepare(input: Tensor, offset: Tensor, weight: Tensor,
              im2col_step: int) -> Tuple[Tensor, Tensor]:
@@ -114,18 +215,9 @@ class DeformConv2dFunction(Function):
                  deform_groups,
                  bias=False,
                  im2col_step=32):
-        return g.op(
-            'mmcv::MMCVDeformConv2d',
-            input,
-            offset,
-            weight,
-            stride_i=stride,
-            padding_i=padding,
-            dilation_i=dilation,
-            groups_i=groups,
-            deform_groups_i=deform_groups,
-            bias_i=bias,
-            im2col_step_i=im2col_step)
+        return deform_conv_symbolic(g, input, weight, offset, None, None,
+                                    stride, padding, dilation, groups,
+                                    deform_groups)
 
     @staticmethod
     def forward(ctx,
@@ -171,9 +263,15 @@ def deform_conv2d(input: Tensor,
                   bias: bool = False,
                   im2col_step: int = 32) -> Tensor:
     if torch.onnx.is_in_onnx_export():
-        return DeformConv2dFunction.apply(input, offset, weight, stride,
-                                          padding, dilation, groups,
-                                          deform_groups, bias, im2col_step)
+        if ONNX_EXPORT_MODE == 'deform_conv':
+            return DeformConv2dFunction.apply(input, offset, weight, stride,
+                                              padding, dilation, groups,
+                                              deform_groups, bias,
+                                              im2col_step)
+        assert bias is False, 'Only support bias is False.'
+        return deform_conv2d_pytorch(input, offset, weight, None, None,
+                                     stride, padding, dilation, groups,
+                                     deform_groups)
     assert bias is False, 'Only support bias is False.'
     input, weight = _prepare(input, offset, weight, im2col_step)
     ext_loader.load()

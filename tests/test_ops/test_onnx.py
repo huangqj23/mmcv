@@ -1,5 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import inspect
 import os
+import warnings
 
 import numpy as np
 import onnx
@@ -8,6 +10,20 @@ import torch
 import torch.nn as nn
 
 onnx_file = 'tmp.onnx'
+
+
+def _export(model, inputs, **kwargs):
+    """Export with the TorchScript exporter, which uses the ``symbolic`` of
+    the ops' autograd functions.
+
+    torch 2.9 made the dynamo exporter the default and deprecated this one.
+    """
+    if 'dynamo' in inspect.signature(torch.onnx.export).parameters:
+        kwargs['dynamo'] = False
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        with torch.no_grad():
+            torch.onnx.export(model, inputs, onnx_file, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -70,14 +86,12 @@ def test_roialign():
 
         # export and load onnx model
         wrapped_model = WrapFunction(warpped_function)
-        with torch.no_grad():
-            torch.onnx.export(
-                wrapped_model, (input, rois),
-                onnx_file,
-                export_params=True,
-                keep_initializers_as_inputs=True,
-                input_names=['input', 'rois'],
-                opset_version=11)
+        _export(
+            wrapped_model, (input, rois),
+            export_params=True,
+            keep_initializers_as_inputs=True,
+            input_names=['input', 'rois'],
+            opset_version=11)
 
         onnx_model = onnx.load(onnx_file)
         session_options = rt.SessionOptions()
@@ -136,14 +150,12 @@ def test_roipool():
 
         # export and load onnx model
         wrapped_model = WrapFunction(warpped_function)
-        with torch.no_grad():
-            torch.onnx.export(
-                wrapped_model, (input, rois),
-                onnx_file,
-                export_params=True,
-                keep_initializers_as_inputs=True,
-                input_names=['input', 'rois'],
-                opset_version=11)
+        _export(
+            wrapped_model, (input, rois),
+            export_params=True,
+            keep_initializers_as_inputs=True,
+            input_names=['input', 'rois'],
+            opset_version=11)
         onnx_model = onnx.load(onnx_file)
 
         # compute onnx_output
@@ -167,10 +179,8 @@ def test_roipool():
 
 
 def _test_symbolic(model, inputs, symbol_name):
-    with torch.no_grad():
-        torch.onnx.export(model, inputs, onnx_file, opset_version=11)
+    _export(model, inputs, opset_version=11)
 
-    import onnx
     model = onnx.load(onnx_file)
     nodes = model.graph.node
 
@@ -189,21 +199,97 @@ def test_carafe():
     _test_symbolic(CARAFENaive(5, 4, 2), (feat, mask), 'MMCVCARAFENaive')
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_deform_conv():
+DEVICES = [
+    'cpu',
+    pytest.param(
+        'cuda',
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason='requires CUDA'))
+]
+
+
+@pytest.mark.parametrize('device', DEVICES)
+@pytest.mark.parametrize('stride, padding, dilation, groups, deform_groups',
+                         [(1, 1, 1, 1, 1), (2, 1, 1, 2, 2), (1, 2, 2, 1, 4),
+                          (2, 0, 1, 4, 1)])
+def test_deform_conv2d_pytorch(device, stride, padding, dilation, groups,
+                               deform_groups):
+    # the export path of DCN / DCNv2 against the kernels
+    from mmcv.ops import deform_conv2d, modulated_deform_conv2d
+    from mmcv.ops.deform_conv import deform_conv2d_pytorch
+    torch.manual_seed(0)
+    x = torch.randn(2, 8, 11, 13, device=device)
+    weight = torch.randn(12, 8 // groups, 3, 3, device=device)
+    out_h = (11 + 2 * padding - dilation * 2 - 1) // stride + 1
+    out_w = (13 + 2 * padding - dilation * 2 - 1) // stride + 1
+    offset = torch.randn(
+        2, deform_groups * 18, out_h, out_w, device=device) * 2
+    mask = torch.rand(2, deform_groups * 9, out_h, out_w, device=device)
+    bias = torch.randn(12, device=device)
+    args = (stride, padding, dilation, groups, deform_groups)
+    torch.testing.assert_close(
+        deform_conv2d_pytorch(x, offset, weight, None, None, *args),
+        deform_conv2d(x, offset, weight, *args),
+        rtol=1e-4,
+        atol=1e-4)
+    torch.testing.assert_close(
+        deform_conv2d_pytorch(x, offset, weight, mask, bias, *args),
+        modulated_deform_conv2d(x, offset, mask, weight, bias, *args),
+        rtol=1e-4,
+        atol=1e-4)
+
+
+@pytest.mark.parametrize('device', DEVICES)
+@pytest.mark.parametrize('modulated', [False, True])
+@pytest.mark.parametrize('mode', ['grid_sample', 'deform_conv'])
+def test_deform_conv(device, modulated, mode, monkeypatch):
+    from onnx.reference import ReferenceEvaluator
+
+    from mmcv.ops import DeformConv2dPack, ModulatedDeformConv2dPack
+    from mmcv.ops import deform_conv as deform_conv_module
+    monkeypatch.setattr(deform_conv_module, 'ONNX_EXPORT_MODE', mode)
+    torch.manual_seed(0)
+    cls = ModulatedDeformConv2dPack if modulated else DeformConv2dPack
+    model = cls(4, 6, 3, stride=2, padding=1, deform_groups=2).eval()
+    # the offsets start at zero; random ones exercise the bilinear sampling
+    nn.init.normal_(model.conv_offset.weight, std=0.5)
+    model = model.to(device)
+    x = torch.randn(2, 4, 7, 9, device=device)
+    with torch.no_grad():
+        expected = model(x).cpu().numpy()
+
+    opset = 17 if mode == 'grid_sample' else 19
+    _export(model, (x, ), opset_version=opset, input_names=['x'])
+    onnx_model = onnx.load(onnx_file)
+    nodes = onnx_model.graph.node
+    assert all(n.domain in ('', 'ai.onnx') for n in nodes)
+    deform = [n for n in nodes if n.op_type == 'DeformConv']
+    if mode == 'grid_sample':
+        # standard ops that ONNX Runtime, OpenVINO and TensorRT all run
+        assert not deform
+        assert any(n.op_type == 'GridSample' for n in nodes)
+        rt = pytest.importorskip('onnxruntime')
+        sess = rt.InferenceSession(
+            onnx_file, providers=['CPUExecutionProvider'])
+        out = sess.run(None, {'x': x.cpu().numpy()})[0]
+    else:
+        # ONNX DeformConv, checked against the ONNX reference implementation,
+        # so the kernels and the ONNX definition agree on the offset / mask
+        # layout and the sampling
+        assert len(deform) == 1
+        assert len(deform[0].input) == (5 if modulated else 3)
+        out = ReferenceEvaluator(onnx_model).run(None,
+                                                 {'x': x.cpu().numpy()})[0]
+    np.testing.assert_allclose(out, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_deform_conv_node_needs_opset_19(monkeypatch):
     from mmcv.ops import DeformConv2dPack
-    x = torch.randn(1, 2, 4, 4, device='cuda')
-    _test_symbolic(
-        DeformConv2dPack(2, 4, 3, 1, 1).cuda(), (x, ), 'MMCVDeformConv2d')
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
-def test_modulated_deform_conv():
-    from mmcv.ops import ModulatedDeformConv2dPack
-    x = torch.randn(1, 2, 4, 4, device='cuda')
-    _test_symbolic(
-        ModulatedDeformConv2dPack(2, 4, 3, 1, 1).cuda(), x,
-        'MMCVModulatedDeformConv2d')
+    from mmcv.ops import deform_conv as deform_conv_module
+    monkeypatch.setattr(deform_conv_module, 'ONNX_EXPORT_MODE', 'deform_conv')
+    model = DeformConv2dPack(2, 4, 3, padding=1).eval()
+    with pytest.raises(Exception, match='opset_version >= 19'):
+        _export(model, (torch.randn(1, 2, 4, 4), ), opset_version=17)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='test requires GPU')
@@ -242,8 +328,7 @@ def test_psa_mask(psa_type):
     from mmcv.ops.psa_mask import PSAMaskFunction
     input = torch.rand(2, 63, 6, 10)
     model = PSAMask(psa_type, (7, 9))
-    with torch.no_grad():
-        torch.onnx.export(model, input, onnx_file, opset_version=17)
+    _export(model, input, opset_version=17)
     onnx_model = onnx.load(onnx_file)
     assert all(n.domain in ('', 'ai.onnx') for n in onnx_model.graph.node)
     sess = onnxruntime.InferenceSession(
