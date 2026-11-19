@@ -36,8 +36,7 @@ def _ops():
 
 
 def _rand(*shape, device, dtype=torch.float, grad=False):
-    return torch.rand(
-        *shape, device=device, dtype=dtype).requires_grad_(grad)
+    return torch.rand(*shape, device=device, dtype=dtype).requires_grad_(grad)
 
 
 def _rois(n, batch, size, device, dtype=torch.float):
@@ -78,8 +77,7 @@ def _cases(device):
     grad_out = _rand(2, 6, 4, 5, **d)
     add('deform_conv_backward_input', ops.deform_conv_backward_input,
         (x.detach(), offset.detach(), grad_out, weight.detach(), *conv, 2))
-    add('deform_conv_backward_parameters',
-        ops.deform_conv_backward_parameters,
+    add('deform_conv_backward_parameters', ops.deform_conv_backward_parameters,
         (x.detach(), offset.detach(), grad_out, weight.detach(), *conv, 1.0,
          2))
     mconv = (3, 3, 2, 2, 1, 1, 1, 1, 1, 2)  # kh kw sh sw ph pw dh dw g dg
@@ -104,9 +102,8 @@ def _cases(device):
 
     rois = _rois(4, 2, 8, device)
     for pool_mode in (0, 1):  # max, avg
-        add(f'roi_align_forward({pool_mode})', ops.roi_align_forward,
-            (_rand(2, 3, 8, 8, **d, grad=True), rois, 2, 3, 0.9, 2,
-             pool_mode, True))
+        add(f'roi_align_forward({pool_mode})', ops.roi_align_forward, (_rand(
+            2, 3, 8, 8, **d, grad=True), rois, 2, 3, 0.9, 2, pool_mode, True))
     out, argmax_y, argmax_x = ops.roi_align_forward(
         _rand(2, 3, 8, 8, **d), rois, 2, 3, 0.9, 2, 0, True)
     add('roi_align_backward', ops.roi_align_backward,
@@ -127,8 +124,7 @@ def _cases(device):
         add(f'{name}_forward', getattr(ops, f'{name}_forward'),
             (feat, masks, 3, 1, 2))
         add(f'{name}_backward', getattr(ops, f'{name}_backward'),
-            (_rand(2, 4, 10, 12, **d), feat.detach(), masks.detach(), 3, 1,
-             2))
+            (_rand(2, 4, 10, 12, **d), feat.detach(), masks.detach(), 3, 1, 2))
 
     x = _rand(2, 3, 8, 8, **d, grad=True)
     pool_offset = (_rand(4, 2, 2, 3, **d) - 0.5).requires_grad_()
@@ -145,13 +141,13 @@ def _cases(device):
     class_weight = _rand(5, **d)
     for w in (None, class_weight):
         tag = f'(weight={w is not None})'
-        add(f'sigmoid_focal_loss_forward{tag}',
-            ops.sigmoid_focal_loss_forward, (logits, target, w, 2.0, 0.25))
+        add(f'sigmoid_focal_loss_forward{tag}', ops.sigmoid_focal_loss_forward,
+            (logits, target, w, 2.0, 0.25))
         add(f'sigmoid_focal_loss_backward{tag}',
             ops.sigmoid_focal_loss_backward,
             (logits.detach(), target, w, 2.0, 0.25))
-        add(f'softmax_focal_loss_forward{tag}',
-            ops.softmax_focal_loss_forward, (logits, target, w, 2.0, 0.25))
+        add(f'softmax_focal_loss_forward{tag}', ops.softmax_focal_loss_forward,
+            (logits, target, w, 2.0, 0.25))
         add(f'softmax_focal_loss_backward{tag}',
             ops.softmax_focal_loss_backward,
             (logits.detach().softmax(1), target, w, 2.0, 0.25))
@@ -189,14 +185,13 @@ def _cases(device):
     add('sync_bn_forward_mean', ops.sync_bn_forward_mean, (x3d, ))
     add('sync_bn_forward_var', ops.sync_bn_forward_var, (x3d, mean))
     add('sync_bn_forward_output', ops.sync_bn_forward_output,
-        (x3d, mean, var, torch.rand(3, **d), torch.rand(3, **d),
-         torch.zeros(3, **d), torch.ones(3, **d), 1e-5, 0.1, 1))
+        (x3d, mean, var, torch.rand(3, **d), torch.rand(
+            3, **d), torch.zeros(3, **d), torch.ones(3, **d), 1e-5, 0.1, 1))
     _, norm, std = ops.sync_bn_forward_output(x3d, mean, var,
                                               torch.rand(3, **d),
                                               torch.rand(3, **d),
                                               torch.zeros(3, **d),
-                                              torch.ones(3, **d), 1e-5, 0.1,
-                                              1)
+                                              torch.ones(3, **d), 1e-5, 0.1, 1)
     grad3d = torch.randn(4, 3, 10, **d)
     grad_weight, grad_bias = ops.sync_bn_backward_param(grad3d, norm)
     add('sync_bn_backward_param', ops.sync_bn_backward_param, (grad3d, norm))
@@ -254,14 +249,12 @@ def test_gradcheck_roi_align_psa_mask(device):
     torch.manual_seed(0)
     x = torch.rand(2, 3, 8, 8, device=device, dtype=torch.double)
     rois = _rois(4, 2, 8, device, torch.double)
-    assert gradcheck(
-        lambda t: roi_align(t, rois, (2, 3), 0.9, 2, 'avg', True),
-        (x.requires_grad_(), ))
+    assert gradcheck(lambda t: roi_align(t, rois, (2, 3), 0.9, 2, 'avg', True),
+                     (x.requires_grad_(), ))
     feat = torch.rand(2, 9, 4, 5, device=device, dtype=torch.double)
     for psa_type in (0, 1):
-        assert gradcheck(
-            lambda t: _ops().psamask_forward(t, psa_type, 3, 3),
-            (feat.requires_grad_(), ))
+        assert gradcheck(lambda t: _ops().psamask_forward(t, psa_type, 3, 3),
+                         (feat.requires_grad_(), ))
 
 
 @pytest.mark.parametrize('device', DEVICES)
@@ -281,9 +274,9 @@ def test_gradcheck_deform_conv(device):
         lambda i, o, w: deform_conv2d(i, o, w, 2, 1, 1, 2, 2, False, 2),
         (x, offset, weight), **NONDET)
     assert gradcheck(
-        lambda i, o, m, w, b: modulated_deform_conv2d(i, o, m, w, b, 2, 1, 1,
-                                                      2, 2),
-        (x, offset, mask, weight, bias), **NONDET)
+        lambda i, o, m, w, b: modulated_deform_conv2d(
+            i, o, m, w, b, 2, 1, 1, 2, 2), (x, offset, mask, weight, bias),
+        **NONDET)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
@@ -330,7 +323,7 @@ def test_gradcheck_cuda_only_ops():
         return -0.25 * (1 - p)**2 * p.log()
 
     for fn, ref in ((sigmoid_focal_loss, sigmoid_ref), (softmax_focal_loss,
-                                                       softmax_ref)):
+                                                        softmax_ref)):
         # softmax with reduction='none' failed in the backward before the
         # reduction moved out of the autograd function
         for reduction in ('none', 'mean', 'sum'):
@@ -361,13 +354,15 @@ def test_gradcheck_cuda_only_ops():
 
 def _compare_compiled(fn, inputs, backend='aot_eager'):
     torch._dynamo.reset()
-    eager_in = [t.detach().clone().requires_grad_(t.requires_grad)
-                for t in inputs]
+    eager_in = [
+        t.detach().clone().requires_grad_(t.requires_grad) for t in inputs
+    ]
     out = fn(*eager_in)
     out.sum().backward()
     compiled = torch.compile(fn, fullgraph=True, backend=backend)
-    comp_in = [t.detach().clone().requires_grad_(t.requires_grad)
-               for t in inputs]
+    comp_in = [
+        t.detach().clone().requires_grad_(t.requires_grad) for t in inputs
+    ]
     comp_out = compiled(*comp_in)
     comp_out.sum().backward()
     # inductor may reorder the float arithmetic around the opaque ops
@@ -397,20 +392,20 @@ def test_compile_fullgraph(backend):
                       backend)
 
     target = torch.randint(0, 5, (6, ), device='cuda')
-    _compare_compiled(
-        lambda t: sigmoid_focal_loss(t, target, reduction='sum'),
-        [torch.randn(6, 5, device='cuda', requires_grad=True)], backend)
+    _compare_compiled(lambda t: sigmoid_focal_loss(t, target, reduction='sum'),
+                      [torch.randn(6, 5, device='cuda', requires_grad=True)],
+                      backend)
 
     shapes = torch.tensor([[4, 5], [2, 3]], device='cuda')
     starts = torch.tensor([0, 20], device='cuda')
     _compare_compiled(
         lambda v, lo, a: multi_scale_deformable_attn_cuda(
-            v, shapes, starts, lo, a, 64), [
-                torch.rand(1, 26, 2, 4, device='cuda', requires_grad=True),
-                torch.rand(1, 3, 2, 2, 2, 2, device='cuda',
-                           requires_grad=True),
-                torch.rand(1, 3, 2, 2, 2, device='cuda', requires_grad=True)
-            ], backend)
+            v, shapes, starts, lo, a, 64),
+        [
+            torch.rand(1, 26, 2, 4, device='cuda', requires_grad=True),
+            torch.rand(1, 3, 2, 2, 2, 2, device='cuda', requires_grad=True),
+            torch.rand(1, 3, 2, 2, 2, device='cuda', requires_grad=True)
+        ], backend)
 
 
 # ---- loading ----

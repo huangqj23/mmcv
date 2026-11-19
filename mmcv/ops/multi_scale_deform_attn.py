@@ -49,7 +49,9 @@ def _register():
                 attention_weights.new_empty(attention_weights.shape))
 
     torch.library.register_autograd(
-        'mmcv::ms_deform_attn_forward', _backward, setup_context=_setup_context)
+        'mmcv::ms_deform_attn_forward',
+        _backward,
+        setup_context=_setup_context)
 
 
 def _ms_deform_attn_args(value, value_spatial_shapes, value_level_start_index,
@@ -396,9 +398,11 @@ class MultiScaleDeformableAttention(BaseModule):
                           'falling back to the PyTorch implementation')
             use_kernel = False
         if use_kernel:
-            output = multi_scale_deformable_attn_cuda(
-                value, spatial_shapes, level_start_index, sampling_locations,
-                attention_weights, self.im2col_step)
+            output = multi_scale_deformable_attn_cuda(value, spatial_shapes,
+                                                      level_start_index,
+                                                      sampling_locations,
+                                                      attention_weights,
+                                                      self.im2col_step)
         else:
             output = multi_scale_deformable_attn_pytorch(
                 value, spatial_shapes, sampling_locations, attention_weights)

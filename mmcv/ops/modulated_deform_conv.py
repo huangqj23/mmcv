@@ -73,10 +73,10 @@ def _register():
           stride_w, pad_h, pad_w, dilation_h, dilation_w, group,
           deformable_group):
         n, _, h, w = input.shape
-        out_h = (h + 2 * pad_h -
-                 (dilation_h * (kernel_h - 1) + 1)) // stride_h + 1
-        out_w = (w + 2 * pad_w -
-                 (dilation_w * (kernel_w - 1) + 1)) // stride_w + 1
+        out_h = (h + 2 * pad_h - (dilation_h *
+                                  (kernel_h - 1) + 1)) // stride_h + 1
+        out_w = (w + 2 * pad_w - (dilation_w *
+                                  (kernel_w - 1) + 1)) // stride_w + 1
         return input.new_empty((n, weight.size(0), out_h, out_w))
 
     @torch.library.register_fake('mmcv::modulated_deform_conv_backward')
@@ -148,12 +148,12 @@ def modulated_deform_conv2d(input: torch.Tensor,
     if torch.onnx.is_in_onnx_export():
         # see mmcv.ops.deform_conv.ONNX_EXPORT_MODE
         if _deform_conv.ONNX_EXPORT_MODE == 'deform_conv':
-            return ModulatedDeformConv2dFunction.apply(
-                input, offset, mask, weight, bias, stride, padding, dilation,
-                groups, deform_groups)
-        return deform_conv2d_pytorch(input, offset, weight, mask, bias,
-                                     stride, padding, dilation, groups,
-                                     deform_groups)
+            return ModulatedDeformConv2dFunction.apply(input, offset, mask,
+                                                       weight, bias, stride,
+                                                       padding, dilation,
+                                                       groups, deform_groups)
+        return deform_conv2d_pytorch(input, offset, weight, mask, bias, stride,
+                                     padding, dilation, groups, deform_groups)
     input, mask, weight, bias = _prepare(input, offset, mask, weight, bias)
     ext_loader.load()
     return torch.ops.mmcv.modulated_deform_conv_forward(
@@ -289,4 +289,3 @@ class ModulatedDeformConv2dPack(ModulatedDeformConv2d):
         super()._load_from_state_dict(state_dict, prefix, local_metadata,
                                       strict, missing_keys, unexpected_keys,
                                       error_msgs)
-

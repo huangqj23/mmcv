@@ -12,7 +12,7 @@ from ..utils import ext_loader
 
 
 def _op_args(output_size, spatial_scale, sampling_ratio, pool_mode, aligned):
-    """Arguments of ``mmcv::roi_align_forward`` after ``input`` and ``rois``."""
+    """Arguments of ``mmcv::roi_align_forward`` after input and rois."""
     assert pool_mode in ('max', 'avg')
     output_size = _pair(output_size)
     return (output_size[0], output_size[1], float(spatial_scale),

@@ -13,7 +13,6 @@ from torch.nn.parameter import Parameter
 from ..utils import ext_loader
 
 
-
 @ext_loader.on_load
 def _register():
     # The kernels behind SyncBatchNormFunction. They have no autograd of

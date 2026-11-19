@@ -70,8 +70,8 @@ def _setup_context(ctx, inputs, output):
 
 
 def _backward(ctx, grad_output):
-    return (torch.ops.mmcv.psamask_backward(grad_output, *ctx.params), None,
-            None, None)
+    return (torch.ops.mmcv.psamask_backward(grad_output,
+                                            *ctx.params), None, None, None)
 
 
 @ext_loader.on_load

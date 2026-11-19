@@ -54,10 +54,12 @@ def deform_conv2d_pytorch(input: Tensor,
     xs = torch.arange(out_w, **arange) * stride[1] - padding[1]
     ky = torch.arange(kh, **arange) * dilation[0]
     kx = torch.arange(kw, **arange) * dilation[1]
-    py = (ys.view(1, 1, 1, 1, -1, 1) + ky.view(1, 1, -1, 1, 1, 1) +
-          offset[:, :, :, :, 0])
-    px = (xs.view(1, 1, 1, 1, 1, -1) + kx.view(1, 1, 1, -1, 1, 1) +
-          offset[:, :, :, :, 1])
+    py = (
+        ys.view(1, 1, 1, 1, -1, 1) + ky.view(1, 1, -1, 1, 1, 1) +
+        offset[:, :, :, :, 0])
+    px = (
+        xs.view(1, 1, 1, 1, 1, -1) + kx.view(1, 1, 1, -1, 1, 1) +
+        offset[:, :, :, :, 1])
     # grid_sample coordinates (align_corners=False): pixel i is centred at
     # (2 * i + 1) / size - 1
     grid = torch.stack([(2 * px + 1) / w - 1, (2 * py + 1) / h - 1], dim=-1)
@@ -71,8 +73,7 @@ def deform_conv2d_pytorch(input: Tensor,
     if mask is not None:
         samples = samples * mask.view(n, g, 1, kh * kw, out_h * out_w)
     # grouped convolution as a batched matrix product
-    samples = samples.reshape(n, groups, c // groups * kh * kw,
-                              out_h * out_w)
+    samples = samples.reshape(n, groups, c // groups * kh * kw, out_h * out_w)
     out = torch.matmul(weight.view(groups, out_c // groups, -1), samples)
     out = out.view(n, out_c, out_h, out_w)
     if bias is not None:
@@ -80,8 +81,8 @@ def deform_conv2d_pytorch(input: Tensor,
     return out
 
 
-def deform_conv_symbolic(g, input, weight, offset, bias, mask, stride,
-                         padding, dilation, groups, deform_groups):
+def deform_conv_symbolic(g, input, weight, offset, bias, mask, stride, padding,
+                         dilation, groups, deform_groups):
     """ONNX ``DeformConv`` (opset 19) for DCN and, with ``mask``, DCNv2.
 
     Used when ``ONNX_EXPORT_MODE == 'deform_conv'``. The offset layout
@@ -198,9 +199,10 @@ def _register():
 class DeformConv2dFunction(Function):
     """:func:`deform_conv2d` as an autograd function.
 
-    :func:`deform_conv2d` calls the registered op ``mmcv::deform_conv_forward``.
-    This class remains for the TorchScript ONNX exporter (``symbolic``) and
-    for code that calls ``DeformConv2dFunction.apply``.
+    :func:`deform_conv2d` calls the registered op
+    ``mmcv::deform_conv_forward``. This class remains for the TorchScript
+    ONNX exporter (``symbolic``) and for code that calls
+    ``DeformConv2dFunction.apply``.
     """
 
     @staticmethod
@@ -266,12 +268,10 @@ def deform_conv2d(input: Tensor,
         if ONNX_EXPORT_MODE == 'deform_conv':
             return DeformConv2dFunction.apply(input, offset, weight, stride,
                                               padding, dilation, groups,
-                                              deform_groups, bias,
-                                              im2col_step)
+                                              deform_groups, bias, im2col_step)
         assert bias is False, 'Only support bias is False.'
-        return deform_conv2d_pytorch(input, offset, weight, None, None,
-                                     stride, padding, dilation, groups,
-                                     deform_groups)
+        return deform_conv2d_pytorch(input, offset, weight, None, None, stride,
+                                     padding, dilation, groups, deform_groups)
     assert bias is False, 'Only support bias is False.'
     input, weight = _prepare(input, offset, weight, im2col_step)
     ext_loader.load()
@@ -495,4 +495,3 @@ class DeformConv2dPack(DeformConv2d):
         super()._load_from_state_dict(state_dict, prefix, local_metadata,
                                       strict, missing_keys, unexpected_keys,
                                       error_msgs)
-

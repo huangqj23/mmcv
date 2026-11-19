@@ -9,7 +9,6 @@ from torch.autograd.function import once_differentiable
 from ..utils import ext_loader
 
 
-
 def _check(input, target, weight, reduction):
     assert target.dtype == torch.long
     assert input.dim() == 2
@@ -105,8 +104,8 @@ class SigmoidFocalLossFunction(Function):
                 reduction: str = 'mean') -> torch.Tensor:
         _check(input, target, weight, reduction)
         ext_loader.load()
-        _sigmoid_setup_context(ctx, (input, target, weight, float(gamma),
-                                     float(alpha)), None)
+        _sigmoid_setup_context(
+            ctx, (input, target, weight, float(gamma), float(alpha)), None)
         ctx.reduction = reduction
         loss = torch.ops.mmcv.sigmoid_focal_loss_forward(
             input, target, weight, *ctx.params)

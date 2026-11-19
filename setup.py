@@ -3,7 +3,6 @@ import os
 import platform
 import re
 from importlib.metadata import PackageNotFoundError, distribution
-
 from setuptools import find_packages, setup
 
 try:
@@ -191,7 +190,6 @@ def get_extensions():
 
 # MMCV_PY_LIMITED_API=0 builds a regular, Python-version specific extension
 PY_LIMITED_API = os.getenv('MMCV_PY_LIMITED_API', '1') == '1'
-
 
 setup(
     name='mmcv' if os.getenv('MMCV_WITH_OPS', '1') == '1' else 'mmcv-lite',

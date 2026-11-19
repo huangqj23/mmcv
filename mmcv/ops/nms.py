@@ -8,7 +8,6 @@ from torch import Tensor
 from ..utils import ext_loader
 
 
-
 @ext_loader.on_load
 def _register():
 
@@ -20,8 +19,9 @@ def _register():
     @torch.library.register_fake('mmcv::softnms')
     def _(boxes, scores, iou_threshold, sigma, min_score, method, offset):
         num_kept = torch.library.get_ctx().new_dynamic_size()
-        return (boxes.new_empty((boxes.size(0), 5)),
-                boxes.new_empty((num_kept, ), dtype=torch.long))
+        return (boxes.new_empty(
+            (boxes.size(0), 5)), boxes.new_empty((num_kept, ),
+                                                 dtype=torch.long))
 
 
 # This function is modified from: https://github.com/pytorch/vision/
@@ -308,8 +308,8 @@ def batched_nms(boxes: Tensor,
             total_mask[mask[keep]] = True
             # dets is float32 (the kernels take float32 boxes) even when the
             # scores are float16 / bfloat16
-            scores_after_nms[mask[keep]] = dets[:, -1].to(
-                scores_after_nms.dtype)
+            scores_after_nms[mask[keep]] = dets[:,
+                                                -1].to(scores_after_nms.dtype)
         keep = total_mask.nonzero(as_tuple=False).view(-1)
 
         scores, inds = scores_after_nms[keep].sort(descending=True)
@@ -359,4 +359,3 @@ def nms_match(dets: array_like_type,
         return [m.to(dets.device) for m in matched]
     else:
         return [m.numpy().astype(int) for m in matched]
-
