@@ -390,6 +390,11 @@ class MultiScaleDeformableAttention(BaseModule):
         use_kernel = (
             IS_CUDA_AVAILABLE and value.is_cuda and EXT_BUILT
             and not torch.onnx.is_in_onnx_export())
+        if use_kernel and value.dtype == torch.bfloat16:
+            # the CUDA kernel has no bfloat16 version
+            warnings.warn('MultiScaleDeformableAttention: bfloat16 input, '
+                          'falling back to the PyTorch implementation')
+            use_kernel = False
         if use_kernel:
             output = multi_scale_deformable_attn_cuda(
                 value, spatial_shapes, level_start_index, sampling_locations,

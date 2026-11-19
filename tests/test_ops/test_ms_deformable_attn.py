@@ -84,6 +84,33 @@ def test_multiscale_deformable_attention(device):
         level_start_index=level_start_index)
 
 
+@pytest.mark.skipif(not IS_CUDA_AVAILABLE, reason='requires CUDA support')
+def test_multiscale_deformable_attention_bf16():
+    # the CUDA kernel has no bfloat16 version, so the module falls back to
+    # the PyTorch implementation (as in OneDL 7394e5e)
+    torch.manual_seed(0)
+    msda = MultiScaleDeformableAttention(
+        embed_dims=32, num_levels=2, num_heads=4).cuda().eval()
+    msda.init_weights()
+    num_query, bs = 5, 1
+    query = torch.rand(num_query, bs, 32, device='cuda')
+    value = torch.rand(6 * 8 + 3 * 4, bs, 32, device='cuda')
+    reference_points = torch.rand(bs, num_query, 2, 2, device='cuda')
+    shapes = dict(
+        spatial_shapes=torch.tensor([[6, 8], [3, 4]], device='cuda'),
+        level_start_index=torch.tensor([0, 48], device='cuda'))
+    with torch.no_grad():
+        expected = msda(
+            query, value=value, reference_points=reference_points, **shapes)
+        with pytest.warns(UserWarning, match='bfloat16'):
+            out = msda.to(torch.bfloat16)(
+                query.bfloat16(),
+                value=value.bfloat16(),
+                reference_points=reference_points.bfloat16(),
+                **shapes)
+    torch.testing.assert_close(out.float(), expected, rtol=0.05, atol=0.05)
+
+
 def test_forward_multi_scale_deformable_attn_pytorch():
     N, M, D = 1, 2, 2
     Lq, L, P = 2, 2, 2
