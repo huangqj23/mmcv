@@ -144,6 +144,23 @@ class Testnms:
         with pytest.raises(AssertionError):
             nms_match(wrong_dets, iou_thr)
 
+    def test_batched_nms_half_scores(self):
+        # the split path (at least split_thr boxes) wrote the float32 scores
+        # of dets into a float16 buffer and failed (OneDL 6c39d1c)
+        from mmcv.ops import batched_nms
+        torch.manual_seed(0)
+        boxes = torch.rand(30, 4) * 50
+        boxes[:, 2:] += boxes[:, :2] + 1
+        # distinct in float16, so both paths sort the same way
+        scores = torch.linspace(0.1, 0.9, 30)[torch.randperm(30)]
+        idxs = torch.randint(0, 3, (30, ))
+        cfg = dict(iou_threshold=0.5)
+        dets, keep = batched_nms(boxes, scores.half(), idxs,
+                                 dict(cfg, split_thr=1))
+        ref_dets, ref_keep = batched_nms(boxes, scores, idxs, cfg)
+        assert torch.equal(keep, ref_keep)
+        assert torch.equal(dets[:, :4], ref_dets[:, :4])
+
     def test_batched_nms(self):
         from mmcv.ops import batched_nms
         results = mmengine.load('./tests/data/batched_nms_data.pkl')
