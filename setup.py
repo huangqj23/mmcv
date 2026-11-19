@@ -1,6 +1,5 @@
 import glob
 import os
-import platform
 import re
 from importlib.metadata import PackageNotFoundError, distribution
 from setuptools import find_packages, setup
@@ -154,10 +153,10 @@ def get_extensions():
         # limited API (csrc/pytorch/module.cpp): one wheel per (torch, CUDA)
         # covers every Python version from 3.10 on
         define_macros += [('Py_LIMITED_API', '0x030A0000')]
-    if platform.system() != 'Windows':
-        extra_compile_args = {'cxx': ['-std=c++17']}
-    else:
-        extra_compile_args = {'cxx': ['/std:c++17']}
+    # no -std flag: torch's BuildExtension adds the standard its headers need
+    # when none is given, C++17 for torch 2.6 and C++20 for 2.15 (whose
+    # headers refuse to compile as C++17)
+    extra_compile_args = {'cxx': []}
     op_files = glob.glob('./mmcv/ops/csrc/pytorch/*.cpp') + \
         glob.glob('./mmcv/ops/csrc/pytorch/cpu/*.cpp')
 
@@ -167,9 +166,6 @@ def get_extensions():
         define_macros += [('MMCV_WITH_CUDA', None)]
         cuda_args = os.getenv('MMCV_CUDA_ARGS')
         extra_compile_args['nvcc'] = [cuda_args] if cuda_args else []
-        # on Windows the compiler picks the standard by itself
-        if platform.system() != 'Windows':
-            extra_compile_args['nvcc'] += ['-std=c++17']
         op_files += glob.glob('./mmcv/ops/csrc/pytorch/cuda/*.cu') + \
             glob.glob('./mmcv/ops/csrc/pytorch/cuda/*.cpp')
         extension = CUDAExtension
