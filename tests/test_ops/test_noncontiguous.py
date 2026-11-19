@@ -73,8 +73,8 @@ def deform_roi_pool(device):
     rois = torch.tensor([[0, 1., 1., 9., 9.], [1, 2., 3., 12., 14.]],
                         device=device)
     offset = torch.randn(2, 2, 4, 4, device=device) * 0.1
-    return (lambda f, o: DeformRoIPool((4, 4), 1.0, 2)(f, rois, o), feat,
-            offset)
+    return (lambda f, o: DeformRoIPool((4, 4), 1.0, 2)
+            (f, rois, o), feat, offset)
 
 
 def carafe(device):

@@ -1,0 +1,184 @@
+# CI of the nv branch: NVIDIA GPUs and CPU only.
+#
+# - lint: the tools of .pre-commit-config.yaml on the files nv changes
+#   relative to industrial (older files are not reformatted, to keep merges
+#   with industrial clean)
+# - cpu: build with the CPU kernels and run the op tests, for torch 2.6 (the
+#   lower bound), 2.8 (industrial-vision) and the newest release
+# - cuda: build the CUDA wheels for the same torch versions (the hosted
+#   runners have no GPU, so the CUDA tests run on our own machines) and count
+#   deprecation warnings in the build log, which flag C++ APIs that PyTorch
+#   is about to drop
+# - release: on a tag v<version with + replaced by ->, e.g. v2.2.0-nv.1,
+#   attach the wheels to a GitHub release:
+#   pip install mmcv==2.2.0+nv.1.cu124.torch2.6 \
+#       -f https://github.com/<owner>/mmcv/releases/expanded_assets/v2.2.0-nv.1
+name: nv
+
+on:
+  push:
+    branches: [nv]
+    tags: ['v*-nv.*']
+  pull_request:
+    branches: [nv]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # nv needs this mmengine fork (cfg_type_matches; checkpoints load with the
+  # weights_only default of torch >= 2.6)
+  MMENGINE: git+https://github.com/huangqj23/mmengine.git@industrial
+  OP_TESTS: >-
+    bbox bilinear_grid_sample carafe cc_attention corner_pool deform_conv
+    deform_roi_pool focal_loss info masked_conv2d merge_cells
+    modulated_deform_conv ms_deformable_attn nms noncontiguous onnx psa_mask
+    roi_align roi_pool saconv syncbn torch_library
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install the tools of .pre-commit-config.yaml
+        run: pip install flake8==5.0.4 isort==5.11.5 yapf==0.32.0 codespell==2.2.1
+      - name: Lint the Python files nv changes relative to industrial
+        run: |
+          git fetch --no-tags origin industrial
+          files=$(git diff --name-only --diff-filter=ACMR origin/industrial...HEAD -- '*.py')
+          echo "$files"
+          if [ -z "$files" ]; then exit 0; fi
+          flake8 $files
+          isort --check-only --diff $files
+          yapf --diff $files
+          codespell $files
+
+  cpu:
+    name: cpu / torch ${{ matrix.torch }} / py${{ matrix.python }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the company server; same numpy / opencv as there
+          - torch: '2.6.0'
+            python: '3.10'
+            pins: numpy<2 opencv-python-headless<4.12
+          # industrial-vision on AutoDL
+          - torch: '2.8.0'
+            python: '3.10'
+            pins: numpy<2 opencv-python-headless<4.12
+          # the newest release
+          - torch: '2.15.0'
+            python: '3.12'
+            pins: numpy opencv-python-headless
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install torch, mmengine and the test dependencies
+        run: |
+          pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
+          pip install 'setuptools<70' wheel ninja ${{ matrix.pins }}
+          pip install --no-build-isolation "mmengine @ $MMENGINE"
+          pip install pytest onnx onnxruntime
+      - name: Build mmcv with the CPU kernels
+        env:
+          MMCV_WITH_OPS: 1
+          FORCE_CUDA: 0
+        run: pip install -v --no-build-isolation -e . 2>&1 | tee build.log
+      - name: Count deprecation warnings
+        run: bash .github/count_deprecated.sh build.log "cpu, torch ${{ matrix.torch }}"
+      - name: Test
+        run: |
+          files=""
+          for t in $OP_TESTS; do files="$files tests/test_ops/test_$t.py"; done
+          python -m pytest -q -p no:cacheprovider -rfE $files tests/test_image/test_photometric.py
+
+  cuda:
+    name: cuda / torch ${{ matrix.torch }}+${{ matrix.cu }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {torch: '2.6.0', cuda: '12.4', cu: cu124, python: '3.10', os: ubuntu-22.04, repo: ubuntu2204}
+          - {torch: '2.8.0', cuda: '12.8', cu: cu128, python: '3.10', os: ubuntu-22.04, repo: ubuntu2204}
+          - {torch: '2.15.0', cuda: '13.2', cu: cu132, python: '3.12', os: ubuntu-24.04, repo: ubuntu2404}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install nvcc and the CUDA headers torch includes
+        run: |
+          v=${{ matrix.cuda }}
+          d=${v/./-}
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/${{ matrix.repo }}/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            cuda-nvcc-$d cuda-cudart-dev-$d cuda-cccl-$d cuda-nvtx-$d \
+            cuda-profiler-api-$d libcublas-dev-$d libcusparse-dev-$d \
+            libcusolver-dev-$d libcurand-dev-$d
+          echo "CUDA_HOME=/usr/local/cuda-$v" >> "$GITHUB_ENV"
+          echo "/usr/local/cuda-$v/bin" >> "$GITHUB_PATH"
+      - name: Install torch
+        run: |
+          pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/${{ matrix.cu }}
+          pip install 'setuptools<70' wheel ninja numpy
+      - name: Build the wheel
+        env:
+          MMCV_WITH_OPS: 1
+          FORCE_CUDA: 1
+          # 2080 Ti and 4080 SUPER
+          TORCH_CUDA_ARCH_LIST: '7.5;8.9'
+          MAX_JOBS: 4
+        run: |
+          torch_mm=$(python -c "import torch; print('.'.join(torch.__version__.split('.')[:2]))")
+          export MMCV_LOCAL_VERSION=${{ matrix.cu }}.torch$torch_mm
+          python setup.py bdist_wheel 2>&1 | tee build.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ls -l dist
+      - name: Count deprecation warnings
+        run: bash .github/count_deprecated.sh build.log "cuda, torch ${{ matrix.torch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-torch${{ matrix.torch }}-${{ matrix.cu }}
+          path: dist/*.whl
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, cpu, cuda]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the tag matches mmcv/version.py
+        run: |
+          version=$(python -c "exec(open('mmcv/version.py').read()); print(__version__)")
+          test "$GITHUB_REF_NAME" = "v${version/+/-}"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release with the wheels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl \
+            --title "mmcv $GITHUB_REF_NAME" \
+            --notes "Wheels for NVIDIA GPUs (sm_75, sm_89) and CPU, one per torch / CUDA version, for every Python >= 3.10 (abi3)."

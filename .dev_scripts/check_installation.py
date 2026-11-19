@@ -8,12 +8,10 @@ from mmcv.utils import collect_env
 def check_installation():
     """Check whether mmcv has been installed successfully."""
     np_boxes1 = np.asarray(
-        [[1.0, 1.0, 3.0, 4.0], [2.0, 2.0, 3.0, 4.0],
-         [7.0, 7.0, 8.0, 8.0]],
+        [[1.0, 1.0, 3.0, 4.0], [2.0, 2.0, 3.0, 4.0], [7.0, 7.0, 8.0, 8.0]],
         dtype=np.float32)
     np_boxes2 = np.asarray(
-        [[0.0, 2.0, 2.0, 5.0], [2.0, 1.0, 3.0, 3.0],
-         [5.0, 5.0, 6.0, 7.0]],
+        [[0.0, 2.0, 2.0, 5.0], [2.0, 1.0, 3.0, 3.0], [5.0, 5.0, 6.0, 7.0]],
         dtype=np.float32)
     boxes1 = torch.from_numpy(np_boxes1)
     boxes2 = torch.from_numpy(np_boxes2)
