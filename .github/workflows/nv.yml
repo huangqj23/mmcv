@@ -5,6 +5,9 @@
 #   with industrial clean)
 # - cpu: build with the CPU kernels and run the op tests, for torch 2.6 (the
 #   lower bound), 2.8 (industrial-vision) and the newest release
+# - export: the segmentation codebase's export tool on models that use the
+#   ops (PSAMask, DCN, MultiScaleDeformableAttention), ONNX Runtime and
+#   OpenVINO against PyTorch
 # - cuda: build the CUDA wheels for the same torch versions (the hosted
 #   runners have no GPU, so the CUDA tests run on our own machines) and count
 #   deprecation warnings in the build log, which flag C++ APIs that PyTorch
@@ -106,6 +109,55 @@ jobs:
           for t in $OP_TESTS; do files="$files tests/test_ops/test_$t.py"; done
           python -m pytest -q -p no:cacheprovider -rfE $files tests/test_image/test_photometric.py
 
+  export:
+    # tools/deploy/export.py of the segmentation codebase on models that
+    # exercise the ops: ONNX export, graph check (standard ops only), ONNX
+    # Runtime and OpenVINO against PyTorch. Random weights, small inputs.
+    name: export / torch 2.6 / ORT + OpenVINO
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: huangqj23/mmsegmentation
+          ref: nv
+          path: mmseg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install torch, mmengine, mmdet, the runtimes
+        run: |
+          pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install 'setuptools<70' wheel ninja 'numpy<2' 'opencv-python-headless<4.12'
+          pip install --no-build-isolation "mmengine @ $MMENGINE"
+          pip install onnx onnxruntime openvino==2025.4.1
+          pip install matplotlib prettytable scipy ftfy regex pycocotools shapely terminaltables tqdm
+          pip install --no-deps "mmdet @ git+https://github.com/huangqj23/mmdetection.git@industrial"
+      - name: Build mmcv with the CPU kernels
+        env:
+          MMCV_WITH_OPS: 1
+          FORCE_CUDA: 0
+        run: pip install --no-build-isolation -e .
+      - name: Install the segmentation codebase
+        run: pip install --no-deps -e mmseg
+      - name: Export
+        working-directory: mmseg
+        run: |
+          # DeepLabV3+ with DCN in the backbone (the DCN export path)
+          cat > dcn_deeplabv3plus.py <<'EOF'
+          _base_ = 'configs/deeplabv3plus/deeplabv3plus_r50-d8_4xb2-40k_cityscapes-512x1024.py'
+          model = dict(backbone=dict(
+              dcn=dict(type='DCN', deform_groups=1, fallback_on_stride=False),
+              stage_with_dcn=(False, True, True, True)))
+          EOF
+          set -x
+          ex="python tools/deploy/export.py --shape 128 256 --no-trt --device cpu"
+          $ex configs/segformer/segformer_mit-b0_8xb1-160k_cityscapes-1024x1024.py --out out/segformer_b0
+          $ex configs/psanet/psanet_r50-d8_4xb2-40k_cityscapes-512x1024.py --out out/psanet
+          $ex dcn_deeplabv3plus.py --out out/deeplabv3plus_dcn
+          $ex configs/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024.py --out out/mask2former
+          python tools/deploy/summarize.py out/*.report.json >> "$GITHUB_STEP_SUMMARY"
+
   cuda:
     name: cuda / torch ${{ matrix.torch }}+${{ matrix.cu }}
     runs-on: ${{ matrix.os }}
@@ -161,7 +213,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, cpu, cuda]
+    needs: [lint, cpu, export, cuda]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
