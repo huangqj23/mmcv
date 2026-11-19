@@ -79,11 +79,12 @@ class RoIAlignFunction(Function):
         def _select(g, self, dim, index):
             return g.op('Gather', self, index, axis_i=dim)
 
-        # batch_indices = rois[:, 0].long()
+        # batch_indices = rois[:, 0].long(); a scalar index drops the axis,
+        # which Squeeze would do with an attribute up to opset 12 and an
+        # input from opset 13
         batch_indices = _select(
             g, rois, 1,
-            g.op('Constant', value_t=torch.tensor([0], dtype=torch.long)))
-        batch_indices = g.op('Squeeze', batch_indices, axes_i=[1])
+            g.op('Constant', value_t=torch.tensor(0, dtype=torch.long)))
         batch_indices = g.op(
             'Cast', batch_indices, to_i=TensorProtoDataType.INT64)
         # rois = rois[:, 1:]
@@ -93,7 +94,14 @@ class RoIAlignFunction(Function):
                 'Constant',
                 value_t=torch.tensor([1, 2, 3, 4], dtype=torch.long)))
 
-        if aligned:
+        attrs = {}
+        if g.opset >= 16:
+            # RoiAlign-16 shifts the scaled rois by -0.5 itself unless told
+            # otherwise (its default is half_pixel); output_half_pixel is the
+            # behaviour of opset 10, which aligned=False matches
+            attrs['coordinate_transformation_mode_s'] = (
+                'half_pixel' if aligned else 'output_half_pixel')
+        elif aligned:
             # rois -= 0.5/spatial_scale
             aligned_offset = g.op(
                 'Constant',
@@ -110,7 +118,8 @@ class RoIAlignFunction(Function):
             output_width_i=output_size[1],
             spatial_scale_f=spatial_scale,
             sampling_ratio_i=max(0, sampling_ratio),
-            mode_s=pool_mode)
+            mode_s=pool_mode,
+            **attrs)
 
     @staticmethod
     def forward(ctx: Any,

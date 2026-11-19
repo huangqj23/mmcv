@@ -49,7 +49,18 @@ class WrapFunction(nn.Module):
         return self.wrapped_function(*args, **kwargs)
 
 
-def test_roialign():
+@pytest.mark.parametrize('opset', [11, 17])
+@pytest.mark.parametrize('aligned', [True, False])
+def test_roialign(opset, aligned):
+    """ONNX RoiAlign against the kernel.
+
+    From opset 16 the node itself says whether to shift the coordinates by
+    half a pixel. Before, aligned=True subtracts 0.5 / spatial_scale from the
+    rois, which is exact unless a roi is smaller than one feature pixel:
+    onnxruntime then stretches it to 1x1, as the kernel does only for
+    aligned=False. So the random rois, some of them that small, are checked
+    from opset 16 on (and for aligned=False).
+    """
     rt = pytest.importorskip('onnxruntime')
     try:
         from mmcv.ops import roi_align
@@ -67,10 +78,17 @@ def test_roialign():
                                         [2., 1.]]]], [[0., 0., 0., 1., 1.]]),
               ([[[[1., 2., 5., 6.], [3., 4., 7., 8.], [9., 10., 13., 14.],
                   [11., 12., 15., 16.]]]], [[0., 0., 0., 3., 3.]])]
+    if opset >= 16 or not aligned:
+        g = torch.Generator().manual_seed(0)
+        xy = torch.rand(10, 2, generator=g) * 14 - 1
+        wh = torch.rand(10, 2, generator=g) * 6 + 0.2
+        batch = torch.randint(0, 2, (10, 1), generator=g).float()
+        inputs.append((torch.randn(2, 4, 12, 16, generator=g).tolist(),
+                       torch.cat([batch, xy, xy + wh], 1).tolist()))
 
     def warpped_function(torch_input, torch_rois):
         return roi_align(torch_input, torch_rois, (pool_w, pool_h),
-                         spatial_scale, sampling_ratio, 'avg', True)
+                         spatial_scale, sampling_ratio, 'avg', aligned)
 
     for case in inputs:
         np_input = np.array(case[0], dtype=np.float32)
@@ -82,7 +100,7 @@ def test_roialign():
         with torch.no_grad():
             pytorch_output = roi_align(input, rois, (pool_w, pool_h),
                                        spatial_scale, sampling_ratio, 'avg',
-                                       True)
+                                       aligned)
 
         # export and load onnx model
         wrapped_model = WrapFunction(warpped_function)
@@ -91,9 +109,15 @@ def test_roialign():
             export_params=True,
             keep_initializers_as_inputs=True,
             input_names=['input', 'rois'],
-            opset_version=11)
+            opset_version=opset)
 
         onnx_model = onnx.load(onnx_file)
+        if opset >= 16:
+            node, = (
+                n for n in onnx_model.graph.node if n.op_type == 'RoiAlign')
+            mode = {a.name: a.s
+                    for a in node.attribute}['coordinate_transformation_mode']
+            assert mode == (b'half_pixel' if aligned else b'output_half_pixel')
         session_options = rt.SessionOptions()
 
         # compute onnx_output
