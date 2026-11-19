@@ -144,6 +144,11 @@ def get_extensions():
 
     os.environ.setdefault('MAX_JOBS', str(cpu_use))
     define_macros = []
+    if PY_LIMITED_API:
+        # the ops reach Python through torch.ops, and mmcv._ext only uses the
+        # limited API (csrc/pytorch/module.cpp): one wheel per (torch, CUDA)
+        # covers every Python version from 3.10 on
+        define_macros += [('Py_LIMITED_API', '0x030A0000')]
     if platform.system() != 'Windows':
         extra_compile_args = {'cxx': ['-std=c++17']}
     else:
@@ -176,9 +181,14 @@ def get_extensions():
         sources=op_files,
         include_dirs=include_dirs,
         define_macros=define_macros,
-        extra_compile_args=extra_compile_args)
+        extra_compile_args=extra_compile_args,
+        py_limited_api=PY_LIMITED_API)
     extensions.append(ext_ops)
     return extensions
+
+
+# MMCV_PY_LIMITED_API=0 builds a regular, Python-version specific extension
+PY_LIMITED_API = os.getenv('MMCV_PY_LIMITED_API', '1') == '1'
 
 
 setup(
@@ -211,4 +221,7 @@ setup(
     python_requires='>=3.10',
     ext_modules=get_extensions(),
     cmdclass=cmd_class,
+    options={'bdist_wheel': {
+        'py_limited_api': 'cp310'
+    }} if PY_LIMITED_API else {},
     zip_safe=False)
