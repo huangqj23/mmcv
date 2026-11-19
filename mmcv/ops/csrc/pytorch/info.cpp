@@ -48,3 +48,8 @@ std::string get_compiler_version() {
 #endif
   return ss.str();
 }
+
+TORCH_LIBRARY_FRAGMENT(mmcv, m) {
+  m.def("get_compiler_version() -> str", &get_compiler_version);
+  m.def("get_compiling_cuda_version() -> str", &get_compiling_cuda_version);
+}

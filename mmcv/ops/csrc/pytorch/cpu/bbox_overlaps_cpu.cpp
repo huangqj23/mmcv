@@ -1,6 +1,5 @@
 // Copyright(c) OpenMMLab.All rights reserved.
 #include "pytorch_cpp_helper.hpp"
-#include "pytorch_device_registry.hpp"
 
 using torch::indexing::None;
 using torch::indexing::Slice;
@@ -58,8 +57,3 @@ void bbox_overlaps_cpu(const Tensor boxes1, const Tensor boxes2, Tensor ious,
                        const int mode, const bool aligned, const int offset) {
   bbox_overlaps_cpu_kernel(boxes1, boxes2, ious, mode, aligned, offset);
 }
-
-void bbox_overlaps_impl(const Tensor boxes1, const Tensor boxes2, Tensor ious,
-                        const int mode, const bool aligned, const int offset);
-
-REGISTER_DEVICE_IMPL(bbox_overlaps_impl, CPU, bbox_overlaps_cpu);

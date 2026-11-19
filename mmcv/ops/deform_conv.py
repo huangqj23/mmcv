@@ -14,13 +14,93 @@ from torch.nn.modules.utils import _pair, _single
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext', [
-    'deform_conv_forward', 'deform_conv_backward_input',
-    'deform_conv_backward_parameters'
-])
+
+def _prepare(input: Tensor, offset: Tensor, weight: Tensor,
+             im2col_step: int) -> Tuple[Tensor, Tensor]:
+    if input is not None and input.dim() != 4:
+        raise ValueError(
+            f'Expected 4D tensor as input, got {input.dim()}D tensor instead.')
+    cur_im2col_step = min(im2col_step, input.size(0))
+    assert input.size(0) % cur_im2col_step == 0, \
+        'batch size must be divisible by im2col_step'
+    # Under AMP "offset" comes from an nn.Conv2d and is cast to float16
+    # while input and weight may stay float32, so the type of offset decides
+    # the precision.
+    input = input.type_as(offset)
+    return input, weight.type_as(input)
+
+
+def _op_args(weight, stride, padding, dilation, groups, deform_groups,
+             im2col_step):
+    """Arguments of ``mmcv::deform_conv_forward`` after the tensors."""
+    stride, padding, dilation = _pair(stride), _pair(padding), _pair(dilation)
+    return (weight.size(3), weight.size(2), stride[1], stride[0], padding[1],
+            padding[0], dilation[1], dilation[0], int(groups),
+            int(deform_groups), int(im2col_step))
+
+
+def _save(ctx, input, offset, weight, params):
+    ctx.save_for_backward(input, offset, weight)
+    ctx.params = params
+
+
+def _grads(ctx, grad_output, need_input_offset, need_weight):
+    """Gradients of input, offset and weight (None where not needed)."""
+    input, offset, weight = ctx.saved_tensors
+    grad_input = grad_offset = grad_weight = None
+    if need_input_offset:
+        grad_input, grad_offset = torch.ops.mmcv.deform_conv_backward_input(
+            input, offset, grad_output, weight, *ctx.params)
+    if need_weight:
+        *params, im2col_step = ctx.params
+        grad_weight = torch.ops.mmcv.deform_conv_backward_parameters(
+            input, offset, grad_output, weight, *params, 1.0, im2col_step)
+    return grad_input, grad_offset, grad_weight
+
+
+def _setup_context(ctx, inputs, output):
+    input, weight, offset, *params = inputs
+    _save(ctx, input, offset, weight, params)
+
+
+def _backward(ctx, grad_output):
+    # schema order: input, weight, offset, then 11 ints
+    need = ctx.needs_input_grad
+    grad_input, grad_offset, grad_weight = _grads(ctx, grad_output, need[0]
+                                                  or need[2], need[1])
+    return (grad_input, grad_weight, grad_offset) + (None, ) * 11
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::deform_conv_forward')
+    def _(input, weight, offset, kW, kH, dW, dH, padW, padH, dilationW,
+          dilationH, group, deformable_group, im2col_step):
+        n, _, h, w = input.shape
+        out_h = (h + 2 * padH - (dilationH * (kH - 1) + 1)) // dH + 1
+        out_w = (w + 2 * padW - (dilationW * (kW - 1) + 1)) // dW + 1
+        return input.new_empty((n, weight.size(0), out_h, out_w))
+
+    @torch.library.register_fake('mmcv::deform_conv_backward_input')
+    def _(input, offset, grad_output, weight, *_):
+        return input.new_empty(input.shape), offset.new_empty(offset.shape)
+
+    @torch.library.register_fake('mmcv::deform_conv_backward_parameters')
+    def _(input, offset, grad_output, weight, *_):
+        return weight.new_empty(weight.shape)
+
+    torch.library.register_autograd(
+        'mmcv::deform_conv_forward', _backward, setup_context=_setup_context)
 
 
 class DeformConv2dFunction(Function):
+    """:func:`deform_conv2d` as an autograd function.
+
+    :func:`deform_conv2d` calls the registered op ``mmcv::deform_conv_forward``.
+    This class remains for the TorchScript ONNX exporter (``symbolic``) and
+    for code that calls ``DeformConv2dFunction.apply``.
+    """
 
     @staticmethod
     def symbolic(g,
@@ -59,61 +139,14 @@ class DeformConv2dFunction(Function):
                 deform_groups: int = 1,
                 bias: bool = False,
                 im2col_step: int = 32) -> Tensor:
-        if input is not None and input.dim() != 4:
-            raise ValueError(
-                f'Expected 4D tensor as input, got {input.dim()}D tensor \
-                  instead.')
         assert bias is False, 'Only support bias is False.'
-        ctx.stride = _pair(stride)
-        ctx.padding = _pair(padding)
-        ctx.dilation = _pair(dilation)
-        ctx.groups = groups
-        ctx.deform_groups = deform_groups
-        ctx.im2col_step = im2col_step
-
-        # When pytorch version >= 1.6.0, amp is adopted for fp16 mode;
-        # amp won't cast the type of model (float32), but "offset" is cast
-        # to float16 by nn.Conv2d automatically, leading to the type
-        # mismatch with input (when it is float32) or weight.
-        # The flag for whether to use fp16 or amp is the type of "offset",
-        # we cast weight and input to temporarily support fp16 and amp
-        # whatever the pytorch version is.
-        input = input.type_as(offset)
-        weight = weight.type_as(input)
-        # the kernels read raw memory as dense tensors
-        input, offset, weight = (input.contiguous(), offset.contiguous(),
-                                 weight.contiguous())
-        ctx.save_for_backward(input, offset, weight)
-
-        output = input.new_empty([
-            int(i)
-            for i in DeformConv2dFunction._output_size(ctx, input, weight)
-        ])
-
-        ctx.bufs_ = [input.new_empty(0), input.new_empty(0)]  # columns, ones
-
-        cur_im2col_step = min(ctx.im2col_step, input.size(0))
-        assert (input.size(0) % cur_im2col_step
-                ) == 0, 'batch size must be divisible by im2col_step'
-        ext_module.deform_conv_forward(
-            input,
-            weight,
-            offset,
-            output,
-            ctx.bufs_[0],
-            ctx.bufs_[1],
-            kW=weight.size(3),
-            kH=weight.size(2),
-            dW=ctx.stride[1],
-            dH=ctx.stride[0],
-            padW=ctx.padding[1],
-            padH=ctx.padding[0],
-            dilationW=ctx.dilation[1],
-            dilationH=ctx.dilation[0],
-            group=ctx.groups,
-            deformable_group=ctx.deform_groups,
-            im2col_step=cur_im2col_step)
-        return output
+        input, weight = _prepare(input, offset, weight, im2col_step)
+        params = _op_args(weight, stride, padding, dilation, groups,
+                          deform_groups, im2col_step)
+        ext_loader.load()
+        _save(ctx, input, offset, weight, params)
+        return torch.ops.mmcv.deform_conv_forward(input, weight, offset,
+                                                  *params)
 
     @staticmethod
     @once_differentiable
@@ -121,82 +154,33 @@ class DeformConv2dFunction(Function):
         ctx, grad_output: Tensor
     ) -> Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor], None,
                None, None, None, None, None, None]:
-        input, offset, weight = ctx.saved_tensors
-        grad_output = grad_output.contiguous()
-
-        grad_input = grad_offset = grad_weight = None
-
-        cur_im2col_step = min(ctx.im2col_step, input.size(0))
-        assert (input.size(0) % cur_im2col_step
-                ) == 0, 'batch size must be divisible by im2col_step'
-
-        grad_output = grad_output.contiguous()
-        if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
-            grad_input = torch.zeros_like(input)
-            grad_offset = torch.zeros_like(offset)
-            ext_module.deform_conv_backward_input(
-                input,
-                offset,
-                grad_output,
-                grad_input,
-                grad_offset,
-                weight,
-                ctx.bufs_[0],
-                kW=weight.size(3),
-                kH=weight.size(2),
-                dW=ctx.stride[1],
-                dH=ctx.stride[0],
-                padW=ctx.padding[1],
-                padH=ctx.padding[0],
-                dilationW=ctx.dilation[1],
-                dilationH=ctx.dilation[0],
-                group=ctx.groups,
-                deformable_group=ctx.deform_groups,
-                im2col_step=cur_im2col_step)
-
-        if ctx.needs_input_grad[2]:
-            grad_weight = torch.zeros_like(weight)
-            ext_module.deform_conv_backward_parameters(
-                input,
-                offset,
-                grad_output,
-                grad_weight,
-                ctx.bufs_[0],
-                ctx.bufs_[1],
-                kW=weight.size(3),
-                kH=weight.size(2),
-                dW=ctx.stride[1],
-                dH=ctx.stride[0],
-                padW=ctx.padding[1],
-                padH=ctx.padding[0],
-                dilationW=ctx.dilation[1],
-                dilationH=ctx.dilation[0],
-                group=ctx.groups,
-                deformable_group=ctx.deform_groups,
-                scale=1,
-                im2col_step=cur_im2col_step)
-
-        return grad_input, grad_offset, grad_weight, \
-            None, None, None, None, None, None, None
-
-    @staticmethod
-    def _output_size(ctx, input, weight):
-        channels = weight.size(0)
-        output_size = (input.size(0), channels)
-        for d in range(input.dim() - 2):
-            in_size = input.size(d + 2)
-            pad = ctx.padding[d]
-            kernel = ctx.dilation[d] * (weight.size(d + 2) - 1) + 1
-            stride_ = ctx.stride[d]
-            output_size += ((in_size + (2 * pad) - kernel) // stride_ + 1, )
-        if not all(map(lambda s: s > 0, output_size)):
-            raise ValueError(
-                'convolution input is too small (output would be ' +
-                'x'.join(map(str, output_size)) + ')')
-        return output_size
+        # Function order: input, offset, weight
+        need = ctx.needs_input_grad
+        grads = _grads(ctx, grad_output, need[0] or need[1], need[2])
+        return grads + (None, ) * 7
 
 
-deform_conv2d = DeformConv2dFunction.apply
+def deform_conv2d(input: Tensor,
+                  offset: Tensor,
+                  weight: Tensor,
+                  stride: Union[int, Tuple[int, ...]] = 1,
+                  padding: Union[int, Tuple[int, ...]] = 0,
+                  dilation: Union[int, Tuple[int, ...]] = 1,
+                  groups: int = 1,
+                  deform_groups: int = 1,
+                  bias: bool = False,
+                  im2col_step: int = 32) -> Tensor:
+    if torch.onnx.is_in_onnx_export():
+        return DeformConv2dFunction.apply(input, offset, weight, stride,
+                                          padding, dilation, groups,
+                                          deform_groups, bias, im2col_step)
+    assert bias is False, 'Only support bias is False.'
+    input, weight = _prepare(input, offset, weight, im2col_step)
+    ext_loader.load()
+    return torch.ops.mmcv.deform_conv_forward(
+        input, weight, offset,
+        *_op_args(weight, stride, padding, dilation, groups, deform_groups,
+                  im2col_step))
 
 
 class DeformConv2d(nn.Module):

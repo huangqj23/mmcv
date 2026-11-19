@@ -3,7 +3,15 @@ import torch
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext', ['bbox_overlaps'])
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::bbox_overlaps')
+    def _(bboxes1, bboxes2, mode, aligned, offset):
+        rows, cols = bboxes1.size(0), bboxes2.size(0)
+        return bboxes1.new_empty((rows, ) if aligned else (rows, cols))
 
 
 def _bbox_overlaps_cpu(bboxes1: torch.Tensor,
@@ -104,21 +112,9 @@ def bbox_overlaps(bboxes1: torch.Tensor,
     assert (bboxes2.size(-1) == 4 or bboxes2.size(0) == 0)
     assert offset == 1 or offset == 0
 
-    rows = bboxes1.size(0)
-    cols = bboxes2.size(0)
-
     if aligned:
-        assert rows == cols
-        ious = bboxes1.new_zeros(rows)
-    else:
-        ious = bboxes1.new_zeros((rows, cols))
+        assert bboxes1.size(0) == bboxes2.size(0)
 
-    if rows * cols == 0:
-        return ious
-
-    # the kernels read raw memory as dense tensors
-    bboxes1, bboxes2 = bboxes1.contiguous(), bboxes2.contiguous()
-    ext_module.bbox_overlaps(
-        bboxes1, bboxes2, ious, mode=mode_flag, aligned=aligned, offset=offset)
-
-    return ious
+    ext_loader.load()
+    return torch.ops.mmcv.bbox_overlaps(bboxes1, bboxes2, mode_flag, aligned,
+                                        offset)

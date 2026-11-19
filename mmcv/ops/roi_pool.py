@@ -9,11 +9,57 @@ from torch.nn.modules.utils import _pair
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext',
-                                 ['roi_pool_forward', 'roi_pool_backward'])
+
+def _op_args(output_size, spatial_scale):
+    """Arguments of ``mmcv::roi_pool_forward`` after ``input`` and ``rois``."""
+    output_size = _pair(output_size)
+    return output_size[0], output_size[1], float(spatial_scale)
+
+
+def _save(ctx, input, rois, params, argmax):
+    ctx.save_for_backward(rois, argmax)
+    ctx.input_shape = list(input.shape)
+    ctx.params = params
+
+
+def _input_grad(ctx, grad_output):
+    rois, argmax = ctx.saved_tensors
+    return torch.ops.mmcv.roi_pool_backward(grad_output, rois, argmax,
+                                            ctx.input_shape, *ctx.params)
+
+
+def _setup_context(ctx, inputs, output):
+    input, rois, *params = inputs
+    ctx.mark_non_differentiable(output[1])
+    _save(ctx, input, rois, params, output[1])
+
+
+def _backward(ctx, grad_output, _):
+    return (_input_grad(ctx, grad_output), ) + (None, ) * 4
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::roi_pool_forward')
+    def _(input, rois, pooled_height, pooled_width, spatial_scale):
+        shape = (rois.size(0), input.size(1), pooled_height, pooled_width)
+        return input.new_empty(shape), input.new_empty(shape, dtype=torch.int)
+
+    @torch.library.register_fake('mmcv::roi_pool_backward')
+    def _(grad_output, rois, argmax, input_shape, *_):
+        return grad_output.new_empty(input_shape)
+
+    torch.library.register_autograd(
+        'mmcv::roi_pool_forward', _backward, setup_context=_setup_context)
 
 
 class RoIPoolFunction(Function):
+    """:func:`roi_pool` as an autograd function.
+
+    Kept for the TorchScript ONNX exporter (``symbolic``) and for code that
+    calls ``RoIPoolFunction.apply``.
+    """
 
     @staticmethod
     def symbolic(g, input, rois, output_size, spatial_scale):
@@ -30,29 +76,10 @@ class RoIPoolFunction(Function):
                 rois: torch.Tensor,
                 output_size: Union[int, tuple],
                 spatial_scale: float = 1.0) -> torch.Tensor:
-        ctx.output_size = _pair(output_size)
-        ctx.spatial_scale = spatial_scale
-        ctx.input_shape = input.size()
-        # the kernels read raw memory as dense tensors
-        input, rois = input.contiguous(), rois.contiguous()
-
-        assert rois.size(1) == 5, 'RoI must be (idx, x1, y1, x2, y2)!'
-
-        output_shape = (rois.size(0), input.size(1), ctx.output_size[0],
-                        ctx.output_size[1])
-        output = input.new_zeros(output_shape)
-        argmax = input.new_zeros(output_shape, dtype=torch.int)
-
-        ext_module.roi_pool_forward(
-            input,
-            rois,
-            output,
-            argmax,
-            pooled_height=ctx.output_size[0],
-            pooled_width=ctx.output_size[1],
-            spatial_scale=ctx.spatial_scale)
-
-        ctx.save_for_backward(rois, argmax)
+        params = _op_args(output_size, spatial_scale)
+        ext_loader.load()
+        output, argmax = torch.ops.mmcv.roi_pool_forward(input, rois, *params)
+        _save(ctx, input, rois, params, argmax)
         return output
 
     @staticmethod
@@ -60,23 +87,18 @@ class RoIPoolFunction(Function):
     def backward(
             ctx: Any, grad_output: torch.Tensor
     ) -> Tuple[torch.Tensor, None, None, None]:
-        rois, argmax = ctx.saved_tensors
-        grad_output = grad_output.contiguous()
-        grad_input = grad_output.new_zeros(ctx.input_shape)
-
-        ext_module.roi_pool_backward(
-            grad_output,
-            rois,
-            argmax,
-            grad_input,
-            pooled_height=ctx.output_size[0],
-            pooled_width=ctx.output_size[1],
-            spatial_scale=ctx.spatial_scale)
-
-        return grad_input, None, None, None
+        return _input_grad(ctx, grad_output), None, None, None
 
 
-roi_pool = RoIPoolFunction.apply
+def roi_pool(input: torch.Tensor,
+             rois: torch.Tensor,
+             output_size: Union[int, tuple],
+             spatial_scale: float = 1.0) -> torch.Tensor:
+    if torch.onnx.is_in_onnx_export():
+        return RoIPoolFunction.apply(input, rois, output_size, spatial_scale)
+    ext_loader.load()
+    return torch.ops.mmcv.roi_pool_forward(
+        input, rois, *_op_args(output_size, spatial_scale))[0]
 
 
 class RoIPool(nn.Module):

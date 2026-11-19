@@ -7,32 +7,52 @@ from torch import Tensor
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext', ['nms', 'softnms', 'nms_match'])
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::nms')
+    def _(boxes, scores, iou_threshold, offset):
+        num_kept = torch.library.get_ctx().new_dynamic_size()
+        return boxes.new_empty((num_kept, ), dtype=torch.long)
+
+    @torch.library.register_fake('mmcv::softnms')
+    def _(boxes, scores, iou_threshold, sigma, min_score, method, offset):
+        num_kept = torch.library.get_ctx().new_dynamic_size()
+        return (boxes.new_empty((boxes.size(0), 5)),
+                boxes.new_empty((num_kept, ), dtype=torch.long))
 
 
 # This function is modified from: https://github.com/pytorch/vision/
+def _nms_inds(bboxes: Tensor, scores: Tensor, iou_threshold: float,
+              offset: int, score_threshold: float, max_num: int) -> Tensor:
+    is_filtering_by_score = score_threshold > 0
+    if is_filtering_by_score:
+        valid_mask = scores > score_threshold
+        bboxes, scores = bboxes[valid_mask], scores[valid_mask]
+        valid_inds = torch.nonzero(valid_mask, as_tuple=False).squeeze(dim=1)
+
+    ext_loader.load()
+    inds = torch.ops.mmcv.nms(bboxes, scores, float(iou_threshold),
+                              int(offset))
+
+    if max_num > 0:
+        inds = inds[:max_num]
+    if is_filtering_by_score:
+        inds = valid_inds[inds]
+    return inds
+
+
 class NMSop(torch.autograd.Function):
+    """Kept for code that calls ``NMSop.apply``; :func:`nms` no longer uses
+    it."""
 
     @staticmethod
     def forward(ctx: Any, bboxes: Tensor, scores: Tensor, iou_threshold: float,
                 offset: int, score_threshold: float, max_num: int) -> Tensor:
-        is_filtering_by_score = score_threshold > 0
-        if is_filtering_by_score:
-            valid_mask = scores > score_threshold
-            bboxes, scores = bboxes[valid_mask], scores[valid_mask]
-            valid_inds = torch.nonzero(
-                valid_mask, as_tuple=False).squeeze(dim=1)
-
-        # the kernels read raw memory as dense tensors
-        bboxes, scores = bboxes.contiguous(), scores.contiguous()
-        inds = ext_module.nms(
-            bboxes, scores, iou_threshold=float(iou_threshold), offset=offset)
-
-        if max_num > 0:
-            inds = inds[:max_num]
-        if is_filtering_by_score:
-            inds = valid_inds[inds]
-        return inds
+        return _nms_inds(bboxes, scores, iou_threshold, offset,
+                         score_threshold, max_num)
 
 
 class SoftNMSop(torch.autograd.Function):
@@ -41,19 +61,12 @@ class SoftNMSop(torch.autograd.Function):
     def forward(ctx: Any, boxes: Tensor, scores: Tensor, iou_threshold: float,
                 sigma: float, min_score: float, method: int,
                 offset: int) -> Tuple[Tensor, Tensor]:
-        # the kernels read raw memory as dense tensors
-        boxes, scores = boxes.contiguous(), scores.contiguous()
-        dets = boxes.new_empty((boxes.size(0), 5), device='cpu')
-        inds = ext_module.softnms(
-            boxes.cpu(),
-            scores.cpu(),
-            dets.cpu(),
-            iou_threshold=float(iou_threshold),
-            sigma=float(sigma),
-            min_score=float(min_score),
-            method=int(method),
-            offset=int(offset))
-        return dets, inds
+        ext_loader.load()
+        # soft-NMS only has a CPU kernel
+        return torch.ops.mmcv.softnms(boxes.cpu(), scores.cpu(),
+                                      float(iou_threshold), float(sigma),
+                                      float(min_score), int(method),
+                                      int(offset))
 
     @staticmethod
     def symbolic(g, boxes, scores, iou_threshold, sigma, min_score, method,
@@ -127,8 +140,8 @@ def nms(boxes: array_like_type,
     assert boxes.size(0) == scores.size(0)
     assert offset in (0, 1)
 
-    inds = NMSop.apply(boxes, scores, iou_threshold, offset, score_threshold,
-                       max_num)
+    inds = _nms_inds(boxes, scores, iou_threshold, offset, score_threshold,
+                     max_num)
     dets = torch.cat((boxes[inds], scores[inds].reshape(-1, 1)), dim=1)
     if is_numpy:
         dets = dets.cpu().numpy()
@@ -332,15 +345,15 @@ def nms_match(dets: array_like_type,
         assert dets.shape[-1] == 5, 'inputs dets.shape should be (N, 5), ' \
                                     f'but get {dets.shape}'
         if isinstance(dets, Tensor):
-            dets_t = dets.detach().cpu().contiguous()
+            dets_t = dets.detach().cpu()
         else:
-            dets_t = torch.from_numpy(dets).contiguous()
-        indata_list = [dets_t]
-        indata_dict = {'iou_threshold': float(iou_threshold)}
-        matched = ext_module.nms_match(*indata_list, **indata_dict)
+            dets_t = torch.from_numpy(dets)
+        ext_loader.load()
+        # one int64 index tensor per group; the kernel is CPU only
+        matched = torch.ops.mmcv.nms_match(dets_t, float(iou_threshold))
 
     if isinstance(dets, Tensor):
-        return [dets.new_tensor(m, dtype=torch.long) for m in matched]
+        return [m.to(dets.device) for m in matched]
     else:
-        return [np.array(m, dtype=int) for m in matched]
+        return [m.numpy().astype(int) for m in matched]
 

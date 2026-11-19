@@ -10,11 +10,65 @@ from torch.nn.modules.utils import _pair
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext',
-                                 ['roi_align_forward', 'roi_align_backward'])
+
+def _op_args(output_size, spatial_scale, sampling_ratio, pool_mode, aligned):
+    """Arguments of ``mmcv::roi_align_forward`` after ``input`` and ``rois``."""
+    assert pool_mode in ('max', 'avg')
+    output_size = _pair(output_size)
+    return (output_size[0], output_size[1], float(spatial_scale),
+            int(sampling_ratio), 0 if pool_mode == 'max' else 1, bool(aligned))
+
+
+def _save(ctx, input, rois, params, argmax_y, argmax_x):
+    ctx.save_for_backward(rois, argmax_y, argmax_x)
+    ctx.input_shape = list(input.shape)
+    ctx.params = params
+
+
+def _input_grad(ctx, grad_output):
+    rois, argmax_y, argmax_x = ctx.saved_tensors
+    return torch.ops.mmcv.roi_align_backward(grad_output, rois, argmax_y,
+                                             argmax_x, ctx.input_shape,
+                                             *ctx.params)
+
+
+def _setup_context(ctx, inputs, output):
+    input, rois, *params = inputs
+    _, argmax_y, argmax_x = output
+    ctx.mark_non_differentiable(argmax_y, argmax_x)
+    _save(ctx, input, rois, params, argmax_y, argmax_x)
+
+
+def _backward(ctx, grad_output, *_):
+    return (_input_grad(ctx, grad_output), ) + (None, ) * 7
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::roi_align_forward')
+    def _(input, rois, aligned_height, aligned_width, spatial_scale,
+          sampling_ratio, pool_mode, aligned):
+        shape = (rois.size(0), input.size(1), aligned_height, aligned_width)
+        argmax_shape = shape if pool_mode == 0 else (0, )
+        return (input.new_empty(shape), input.new_empty(argmax_shape),
+                input.new_empty(argmax_shape))
+
+    @torch.library.register_fake('mmcv::roi_align_backward')
+    def _(grad_output, rois, argmax_y, argmax_x, input_shape, *_):
+        return grad_output.new_empty(input_shape)
+
+    torch.library.register_autograd(
+        'mmcv::roi_align_forward', _backward, setup_context=_setup_context)
 
 
 class RoIAlignFunction(Function):
+    """:func:`roi_align` as an autograd function.
+
+    :func:`roi_align` calls the registered op ``mmcv::roi_align_forward``.
+    This class remains for the TorchScript ONNX exporter, which needs
+    ``symbolic``, and for code that calls ``RoIAlignFunction.apply``.
+    """
 
     @staticmethod
     def symbolic(g, input, rois, output_size, spatial_scale, sampling_ratio,
@@ -67,67 +121,34 @@ class RoIAlignFunction(Function):
                 sampling_ratio: int = 0,
                 pool_mode: str = 'avg',
                 aligned: bool = True) -> torch.Tensor:
-        ctx.output_size = _pair(output_size)
-        ctx.spatial_scale = spatial_scale
-        ctx.sampling_ratio = sampling_ratio
-        assert pool_mode in ('max', 'avg')
-        ctx.pool_mode = 0 if pool_mode == 'max' else 1
-        ctx.aligned = aligned
-        ctx.input_shape = input.size()
-        # the kernels read raw memory as dense tensors
-        input, rois = input.contiguous(), rois.contiguous()
-
-        assert rois.size(1) == 5, 'RoI must be (idx, x1, y1, x2, y2)!'
-
-        output_shape = (rois.size(0), input.size(1), ctx.output_size[0],
-                        ctx.output_size[1])
-        output = input.new_zeros(output_shape)
-        if ctx.pool_mode == 0:
-            argmax_y = input.new_zeros(output_shape)
-            argmax_x = input.new_zeros(output_shape)
-        else:
-            argmax_y = input.new_zeros(0)
-            argmax_x = input.new_zeros(0)
-
-        ext_module.roi_align_forward(
-            input,
-            rois,
-            output,
-            argmax_y,
-            argmax_x,
-            aligned_height=ctx.output_size[0],
-            aligned_width=ctx.output_size[1],
-            spatial_scale=ctx.spatial_scale,
-            sampling_ratio=ctx.sampling_ratio,
-            pool_mode=ctx.pool_mode,
-            aligned=ctx.aligned)
-
-        ctx.save_for_backward(rois, argmax_y, argmax_x)
+        params = _op_args(output_size, spatial_scale, sampling_ratio,
+                          pool_mode, aligned)
+        ext_loader.load()
+        output, argmax_y, argmax_x = torch.ops.mmcv.roi_align_forward(
+            input, rois, *params)
+        _save(ctx, input, rois, params, argmax_y, argmax_x)
         return output
 
     @staticmethod
     @once_differentiable
     def backward(ctx: Any, grad_output: torch.Tensor) -> tuple:
-        rois, argmax_y, argmax_x = ctx.saved_tensors
-        grad_input = grad_output.new_zeros(ctx.input_shape)
-        # complex head architecture may cause grad_output uncontiguous.
-        grad_output = grad_output.contiguous()
-        ext_module.roi_align_backward(
-            grad_output,
-            rois,
-            argmax_y,
-            argmax_x,
-            grad_input,
-            aligned_height=ctx.output_size[0],
-            aligned_width=ctx.output_size[1],
-            spatial_scale=ctx.spatial_scale,
-            sampling_ratio=ctx.sampling_ratio,
-            pool_mode=ctx.pool_mode,
-            aligned=ctx.aligned)
-        return grad_input, None, None, None, None, None, None
+        return (_input_grad(ctx, grad_output), ) + (None, ) * 6
 
 
-roi_align = RoIAlignFunction.apply
+def roi_align(input: torch.Tensor,
+              rois: torch.Tensor,
+              output_size: int,
+              spatial_scale: float = 1.0,
+              sampling_ratio: int = 0,
+              pool_mode: str = 'avg',
+              aligned: bool = True) -> torch.Tensor:
+    if torch.onnx.is_in_onnx_export():
+        return RoIAlignFunction.apply(input, rois, output_size, spatial_scale,
+                                      sampling_ratio, pool_mode, aligned)
+    params = _op_args(output_size, spatial_scale, sampling_ratio, pool_mode,
+                      aligned)
+    ext_loader.load()
+    return torch.ops.mmcv.roi_align_forward(input, rois, *params)[0]
 
 
 class RoIAlign(nn.Module):

@@ -10,8 +10,18 @@ from torch.nn.modules.utils import _pair
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext(
-    '_ext', ['masked_im2col_forward', 'masked_col2im_forward'])
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::masked_im2col_forward')
+    def _(im, mask_h_idx, mask_w_idx, kernel_h, kernel_w, pad_h, pad_w):
+        return im.new_empty(
+            (im.size(1) * kernel_h * kernel_w, mask_h_idx.size(0)))
+
+    @torch.library.register_fake('mmcv::masked_col2im_forward')
+    def _(col, mask_h_idx, mask_w_idx, height, width, channels):
+        return col.new_empty((1, channels, height, width))
 
 
 class MaskedConv2dFunction(Function):
@@ -44,8 +54,6 @@ class MaskedConv2dFunction(Function):
             raise ValueError(
                 'Stride could not only be 1 in masked_conv2d currently.')
         out_channel, in_channel, kernel_h, kernel_w = weight.size()
-        # the kernels read raw memory as dense tensors
-        features = features.contiguous()
 
         batch_size = features.size(0)
         out_h = int(
@@ -57,32 +65,17 @@ class MaskedConv2dFunction(Function):
                 torch.true_divide((features.size(3) + 2 * pad_w -
                                    (kernel_w - 1) - 1), stride_w) + 1))
         mask_inds = torch.nonzero(mask[0] > 0, as_tuple=False)
-        output = features.new_zeros(batch_size, out_channel, out_h, out_w)
-        if mask_inds.numel() > 0:
-            mask_h_idx = mask_inds[:, 0].contiguous()
-            mask_w_idx = mask_inds[:, 1].contiguous()
-            data_col = features.new_zeros(in_channel * kernel_h * kernel_w,
-                                          mask_inds.size(0))
-            ext_module.masked_im2col_forward(
-                features,
-                mask_h_idx,
-                mask_w_idx,
-                data_col,
-                kernel_h=kernel_h,
-                kernel_w=kernel_w,
-                pad_h=pad_h,
-                pad_w=pad_w)
-            masked_output = torch.addmm(1, bias[:, None], 1,
-                                        weight.view(out_channel, -1), data_col)
-            ext_module.masked_col2im_forward(
-                masked_output,
-                mask_h_idx,
-                mask_w_idx,
-                output,
-                height=out_h,
-                width=out_w,
-                channels=out_channel)
-        return output
+        if mask_inds.numel() == 0:
+            return features.new_zeros(batch_size, out_channel, out_h, out_w)
+        mask_h_idx, mask_w_idx = mask_inds[:, 0], mask_inds[:, 1]
+        ext_loader.load()
+        data_col = torch.ops.mmcv.masked_im2col_forward(
+            features, mask_h_idx, mask_w_idx, kernel_h, kernel_w, pad_h, pad_w)
+        masked_output = torch.addmm(bias[:, None],
+                                    weight.view(out_channel, -1), data_col)
+        return torch.ops.mmcv.masked_col2im_forward(masked_output, mask_h_idx,
+                                                    mask_w_idx, out_h, out_w,
+                                                    out_channel)
 
     @staticmethod
     @once_differentiable

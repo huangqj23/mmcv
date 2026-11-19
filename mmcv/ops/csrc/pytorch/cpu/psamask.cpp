@@ -2,7 +2,6 @@
 // Modified from
 // https://github.com/hszhao/semseg/blob/master/lib/psa/src
 #include "pytorch_cpp_helper.hpp"
-#include "pytorch_device_registry.hpp"
 
 #ifndef min
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -183,17 +182,3 @@ void psamask_backward_cpu(const int psa_type, const Tensor grad_output,
                                 half_h_mask, half_w_mask, grad_output,
                                 grad_input);
 }
-
-void psamask_forward_impl(const int psa_type, const Tensor input, Tensor output,
-                          const int num_, const int h_feature,
-                          const int w_feature, const int h_mask,
-                          const int w_mask, const int half_h_mask,
-                          const int half_w_mask);
-
-void psamask_backward_impl(const int psa_type, const Tensor grad_output,
-                           Tensor grad_input, const int num_,
-                           const int h_feature, const int w_feature,
-                           const int h_mask, const int w_mask,
-                           const int half_h_mask, const int half_w_mask);
-REGISTER_DEVICE_IMPL(psamask_forward_impl, CPU, psamask_forward_cpu);
-REGISTER_DEVICE_IMPL(psamask_backward_impl, CPU, psamask_backward_cpu);

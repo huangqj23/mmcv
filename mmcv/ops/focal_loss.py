@@ -8,13 +8,92 @@ from torch.autograd.function import once_differentiable
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext', [
-    'sigmoid_focal_loss_forward', 'sigmoid_focal_loss_backward',
-    'softmax_focal_loss_forward', 'softmax_focal_loss_backward'
-])
+
+
+def _check(input, target, weight, reduction):
+    assert target.dtype == torch.long
+    assert input.dim() == 2
+    assert target.dim() == 1
+    assert input.size(0) == target.size(0)
+    if weight is not None:
+        assert weight.dim() == 1
+        assert input.size(1) == weight.size(0)
+    assert reduction in ('none', 'mean', 'sum')
+
+
+def _reduce(loss, reduction, num):
+    if reduction == 'mean':
+        return loss.sum() / num
+    if reduction == 'sum':
+        return loss.sum()
+    return loss
+
+
+# The registered ops compute the loss of each element (sigmoid) or sample
+# (softmax); the reduction is ordinary PyTorch code, so autograd handles it
+# for every reduction, 'none' included.
+
+
+def _sigmoid_setup_context(ctx, inputs, output):
+    input, target, weight, gamma, alpha = inputs
+    ctx.save_for_backward(input, target, weight)
+    ctx.params = (gamma, alpha)
+
+
+def _sigmoid_backward(ctx, grad_output):
+    input, target, weight = ctx.saved_tensors
+    grad_input = torch.ops.mmcv.sigmoid_focal_loss_backward(
+        input, target, weight, *ctx.params)
+    return grad_input * grad_output, None, None, None, None
+
+
+def _softmax_setup_context(ctx, inputs, output):
+    input, target, weight, gamma, alpha = inputs
+    softmax = output[1]
+    ctx.mark_non_differentiable(softmax)
+    ctx.save_for_backward(softmax, target, weight)
+    ctx.params = (gamma, alpha)
+
+
+def _softmax_backward(ctx, grad_output, _):
+    softmax, target, weight = ctx.saved_tensors
+    grad_input = torch.ops.mmcv.softmax_focal_loss_backward(
+        softmax, target, weight, *ctx.params)
+    return grad_input * grad_output[:, None], None, None, None, None
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::sigmoid_focal_loss_forward')
+    def _(input, target, weight, gamma, alpha):
+        return input.new_empty(input.shape)
+
+    @torch.library.register_fake('mmcv::sigmoid_focal_loss_backward')
+    def _(input, target, weight, gamma, alpha):
+        return input.new_empty(input.shape)
+
+    @torch.library.register_fake('mmcv::softmax_focal_loss_forward')
+    def _(input, target, weight, gamma, alpha):
+        return input.new_empty((input.size(0), )), input.new_empty(input.shape)
+
+    @torch.library.register_fake('mmcv::softmax_focal_loss_backward')
+    def _(softmax, target, weight, gamma, alpha):
+        return softmax.new_empty(softmax.shape)
+
+    torch.library.register_autograd(
+        'mmcv::sigmoid_focal_loss_forward',
+        _sigmoid_backward,
+        setup_context=_sigmoid_setup_context)
+    torch.library.register_autograd(
+        'mmcv::softmax_focal_loss_forward',
+        _softmax_backward,
+        setup_context=_softmax_setup_context)
 
 
 class SigmoidFocalLossFunction(Function):
+    """Kept for code that calls ``SigmoidFocalLossFunction.apply``;
+    :func:`sigmoid_focal_loss` uses the registered op."""
 
     @staticmethod
     def forward(ctx,
@@ -24,59 +103,36 @@ class SigmoidFocalLossFunction(Function):
                 alpha: float = 0.25,
                 weight: Optional[torch.Tensor] = None,
                 reduction: str = 'mean') -> torch.Tensor:
-
-        assert target.dtype == torch.long
-        assert input.dim() == 2
-        assert target.dim() == 1
-        assert input.size(0) == target.size(0)
-        if weight is None:
-            weight = input.new_empty(0)
-        else:
-            assert weight.dim() == 1
-            assert input.size(1) == weight.size(0)
-        ctx.reduction_dict = {'none': 0, 'mean': 1, 'sum': 2}
-        assert reduction in ctx.reduction_dict.keys()
-
-        ctx.gamma = float(gamma)
-        ctx.alpha = float(alpha)
-        ctx.reduction = ctx.reduction_dict[reduction]
-        # the kernels read raw memory as dense tensors
-        input, target, weight = (input.contiguous(), target.contiguous(),
-                                 weight.contiguous())
-
-        output = input.new_zeros(input.size())
-
-        ext_module.sigmoid_focal_loss_forward(
-            input, target, weight, output, gamma=ctx.gamma, alpha=ctx.alpha)
-        if ctx.reduction == ctx.reduction_dict['mean']:
-            output = output.sum() / input.size(0)
-        elif ctx.reduction == ctx.reduction_dict['sum']:
-            output = output.sum()
-        ctx.save_for_backward(input, target, weight)
-        return output
+        _check(input, target, weight, reduction)
+        ext_loader.load()
+        _sigmoid_setup_context(ctx, (input, target, weight, float(gamma),
+                                     float(alpha)), None)
+        ctx.reduction = reduction
+        loss = torch.ops.mmcv.sigmoid_focal_loss_forward(
+            input, target, weight, *ctx.params)
+        return _reduce(loss, reduction, input.size(0))
 
     @staticmethod
     @once_differentiable
     def backward(ctx, grad_output: torch.Tensor) -> tuple:
-        input, target, weight = ctx.saved_tensors
-
-        grad_input = input.new_zeros(input.size())
-
-        ext_module.sigmoid_focal_loss_backward(
-            input,
-            target,
-            weight,
-            grad_input,
-            gamma=ctx.gamma,
-            alpha=ctx.alpha)
-
-        grad_input *= grad_output
-        if ctx.reduction == ctx.reduction_dict['mean']:
-            grad_input /= input.size(0)
+        grad_input = _sigmoid_backward(ctx, grad_output)[0]
+        if ctx.reduction == 'mean':
+            grad_input /= grad_input.size(0)
         return grad_input, None, None, None, None, None
 
 
-sigmoid_focal_loss = SigmoidFocalLossFunction.apply
+def sigmoid_focal_loss(input: torch.Tensor,
+                       target: Union[torch.LongTensor, torch.cuda.LongTensor],
+                       gamma: float = 2.0,
+                       alpha: float = 0.25,
+                       weight: Optional[torch.Tensor] = None,
+                       reduction: str = 'mean') -> torch.Tensor:
+    _check(input, target, weight, reduction)
+    ext_loader.load()
+    loss = torch.ops.mmcv.sigmoid_focal_loss_forward(input, target, weight,
+                                                     float(gamma),
+                                                     float(alpha))
+    return _reduce(loss, reduction, input.size(0))
 
 
 class SigmoidFocalLoss(nn.Module):
@@ -109,6 +165,8 @@ class SigmoidFocalLoss(nn.Module):
 
 
 class SoftmaxFocalLossFunction(Function):
+    """Kept for code that calls ``SoftmaxFocalLossFunction.apply``;
+    :func:`softmax_focal_loss` uses the registered op."""
 
     @staticmethod
     def forward(ctx,
@@ -118,71 +176,39 @@ class SoftmaxFocalLossFunction(Function):
                 alpha: float = 0.25,
                 weight: Optional[torch.Tensor] = None,
                 reduction='mean') -> torch.Tensor:
-
-        assert target.dtype == torch.long
-        assert input.dim() == 2
-        assert target.dim() == 1
-        assert input.size(0) == target.size(0)
-        if weight is None:
-            weight = input.new_empty(0)
-        else:
-            assert weight.dim() == 1
-            assert input.size(1) == weight.size(0)
-        ctx.reduction_dict = {'none': 0, 'mean': 1, 'sum': 2}
-        assert reduction in ctx.reduction_dict.keys()
-
-        ctx.gamma = float(gamma)
-        ctx.alpha = float(alpha)
-        ctx.reduction = ctx.reduction_dict[reduction]
-        # the kernels read raw memory as dense tensors
-        input, target, weight = (input.contiguous(), target.contiguous(),
-                                 weight.contiguous())
-
-        channel_stats, _ = torch.max(input, dim=1)
-        input_softmax = input - channel_stats.unsqueeze(1).expand_as(input)
-        input_softmax.exp_()
-
-        channel_stats = input_softmax.sum(dim=1)
-        input_softmax /= channel_stats.unsqueeze(1).expand_as(input)
-
-        output = input.new_zeros(input.size(0))
-        ext_module.softmax_focal_loss_forward(
-            input_softmax,
-            target,
-            weight,
-            output,
-            gamma=ctx.gamma,
-            alpha=ctx.alpha)
-
-        if ctx.reduction == ctx.reduction_dict['mean']:
-            output = output.sum() / input.size(0)
-        elif ctx.reduction == ctx.reduction_dict['sum']:
-            output = output.sum()
-        ctx.save_for_backward(input_softmax, target, weight)
-        return output
+        _check(input, target, weight, reduction)
+        ext_loader.load()
+        params = (float(gamma), float(alpha))
+        output = torch.ops.mmcv.softmax_focal_loss_forward(
+            input, target, weight, *params)
+        ctx.save_for_backward(output[1], target, weight)
+        ctx.params = params
+        ctx.reduction = reduction
+        return _reduce(output[0], reduction, input.size(0))
 
     @staticmethod
+    @once_differentiable
     def backward(ctx, grad_output: torch.Tensor) -> tuple:
-        input_softmax, target, weight = ctx.saved_tensors
-        buff = input_softmax.new_zeros(input_softmax.size(0))
-        grad_input = input_softmax.new_zeros(input_softmax.size())
-
-        ext_module.softmax_focal_loss_backward(
-            input_softmax,
-            target,
-            weight,
-            buff,
-            grad_input,
-            gamma=ctx.gamma,
-            alpha=ctx.alpha)
-
-        grad_input *= grad_output
-        if ctx.reduction == ctx.reduction_dict['mean']:
-            grad_input /= input_softmax.size(0)
+        if grad_output.dim() == 0:  # 'mean' or 'sum'
+            grad_output = grad_output.expand(ctx.saved_tensors[0].size(0))
+        grad_input = _softmax_backward(ctx, grad_output, None)[0]
+        if ctx.reduction == 'mean':
+            grad_input /= grad_input.size(0)
         return grad_input, None, None, None, None, None
 
 
-softmax_focal_loss = SoftmaxFocalLossFunction.apply
+def softmax_focal_loss(input: torch.Tensor,
+                       target: Union[torch.LongTensor, torch.cuda.LongTensor],
+                       gamma: float = 2.0,
+                       alpha: float = 0.25,
+                       weight: Optional[torch.Tensor] = None,
+                       reduction='mean') -> torch.Tensor:
+    _check(input, target, weight, reduction)
+    ext_loader.load()
+    loss = torch.ops.mmcv.softmax_focal_loss_forward(input, target, weight,
+                                                     float(gamma),
+                                                     float(alpha))[0]
+    return _reduce(loss, reduction, input.size(0))
 
 
 class SoftmaxFocalLoss(nn.Module):

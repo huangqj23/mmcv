@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from typing import Optional, Tuple
 
+import torch
 from torch import Tensor, nn
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
@@ -8,11 +9,62 @@ from torch.nn.modules.utils import _pair
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext(
-    '_ext', ['deform_roi_pool_forward', 'deform_roi_pool_backward'])
+
+def _op_args(output_size, spatial_scale, sampling_ratio, gamma):
+    """Arguments of ``mmcv::deform_roi_pool_forward`` after the tensors."""
+    output_size = _pair(output_size)
+    return (output_size[0], output_size[1], float(spatial_scale),
+            int(sampling_ratio), float(gamma))
+
+
+def _save(ctx, input, rois, offset, params):
+    ctx.save_for_backward(input, rois, offset)
+    ctx.params = params
+
+
+def _grads(ctx, grad_output):
+    """Gradients of input and offset (None without an offset)."""
+    input, rois, offset = ctx.saved_tensors
+    grad_input, grad_offset = torch.ops.mmcv.deform_roi_pool_backward(
+        grad_output, input, rois, offset, *ctx.params)
+    return grad_input, grad_offset if offset is not None else None
+
+
+def _setup_context(ctx, inputs, output):
+    input, rois, offset, *params = inputs
+    _save(ctx, input, rois, offset, params)
+
+
+def _backward(ctx, grad_output):
+    grad_input, grad_offset = _grads(ctx, grad_output)
+    return (grad_input, None, grad_offset) + (None, ) * 5
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::deform_roi_pool_forward')
+    def _(input, rois, offset, pooled_height, pooled_width, *_):
+        return input.new_empty(
+            (rois.size(0), input.size(1), pooled_height, pooled_width))
+
+    @torch.library.register_fake('mmcv::deform_roi_pool_backward')
+    def _(grad_output, input, rois, offset, *_):
+        grad_offset = (
+            offset.new_empty(offset.shape)
+            if offset is not None else input.new_empty((0, )))
+        return input.new_empty(input.shape), grad_offset
+
+    torch.library.register_autograd(
+        'mmcv::deform_roi_pool_forward',
+        _backward,
+        setup_context=_setup_context)
 
 
 class DeformRoIPoolFunction(Function):
+    """:func:`deform_roi_pool` as an autograd function, kept for the
+    TorchScript ONNX exporter (``symbolic``) and for
+    ``DeformRoIPoolFunction.apply``."""
 
     @staticmethod
     def symbolic(g, input, rois, offset, output_size, spatial_scale,
@@ -39,64 +91,36 @@ class DeformRoIPoolFunction(Function):
                 spatial_scale: float = 1.0,
                 sampling_ratio: int = 0,
                 gamma: float = 0.1) -> Tensor:
-        if offset is None:
-            offset = input.new_zeros(0)
-        # the kernels read raw memory as dense tensors
-        input, rois, offset = (input.contiguous(), rois.contiguous(),
-                               offset.contiguous())
-        ctx.output_size = _pair(output_size)
-        ctx.spatial_scale = float(spatial_scale)
-        ctx.sampling_ratio = int(sampling_ratio)
-        ctx.gamma = float(gamma)
-
-        assert rois.size(1) == 5, 'RoI must be (idx, x1, y1, x2, y2)!'
-
-        output_shape = (rois.size(0), input.size(1), ctx.output_size[0],
-                        ctx.output_size[1])
-        output = input.new_zeros(output_shape)
-
-        ext_module.deform_roi_pool_forward(
-            input,
-            rois,
-            offset,
-            output,
-            pooled_height=ctx.output_size[0],
-            pooled_width=ctx.output_size[1],
-            spatial_scale=ctx.spatial_scale,
-            sampling_ratio=ctx.sampling_ratio,
-            gamma=ctx.gamma)
-
-        ctx.save_for_backward(input, rois, offset)
-        return output
+        params = _op_args(output_size, spatial_scale, sampling_ratio, gamma)
+        ext_loader.load()
+        _save(ctx, input, rois, offset, params)
+        return torch.ops.mmcv.deform_roi_pool_forward(input, rois, offset,
+                                                      *params)
 
     @staticmethod
     @once_differentiable
     def backward(
         ctx, grad_output: Tensor
     ) -> Tuple[Tensor, None, Tensor, None, None, None, None]:
-        input, rois, offset = ctx.saved_tensors
-        grad_output = grad_output.contiguous()
-        grad_input = grad_output.new_zeros(input.shape)
-        grad_offset = grad_output.new_zeros(offset.shape)
-
-        ext_module.deform_roi_pool_backward(
-            grad_output,
-            input,
-            rois,
-            offset,
-            grad_input,
-            grad_offset,
-            pooled_height=ctx.output_size[0],
-            pooled_width=ctx.output_size[1],
-            spatial_scale=ctx.spatial_scale,
-            sampling_ratio=ctx.sampling_ratio,
-            gamma=ctx.gamma)
-        if grad_offset.numel() == 0:
-            grad_offset = None
+        grad_input, grad_offset = _grads(ctx, grad_output)
         return grad_input, None, grad_offset, None, None, None, None
 
 
-deform_roi_pool = DeformRoIPoolFunction.apply
+def deform_roi_pool(input: Tensor,
+                    rois: Tensor,
+                    offset: Optional[Tensor],
+                    output_size: Tuple[int, ...],
+                    spatial_scale: float = 1.0,
+                    sampling_ratio: int = 0,
+                    gamma: float = 0.1) -> Tensor:
+    if torch.onnx.is_in_onnx_export():
+        return DeformRoIPoolFunction.apply(input, rois, offset, output_size,
+                                           spatial_scale, sampling_ratio,
+                                           gamma)
+    ext_loader.load()
+    return torch.ops.mmcv.deform_roi_pool_forward(
+        input, rois, offset,
+        *_op_args(output_size, spatial_scale, sampling_ratio, gamma))
 
 
 class DeformRoIPool(nn.Module):

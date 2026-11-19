@@ -1,13 +1,14 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from ..utils import ext_loader
+import torch
 
-ext_module = ext_loader.load_ext(
-    '_ext', ['get_compiler_version', 'get_compiling_cuda_version'])
+from ..utils import ext_loader
 
 
 def get_compiler_version():
-    return ext_module.get_compiler_version()
+    ext_loader.load()
+    return torch.ops.mmcv.get_compiler_version()
 
 
 def get_compiling_cuda_version():
-    return ext_module.get_compiling_cuda_version()
+    ext_loader.load()
+    return torch.ops.mmcv.get_compiling_cuda_version()

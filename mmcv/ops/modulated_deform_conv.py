@@ -13,12 +13,89 @@ from torch.nn.modules.utils import _pair, _single
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext(
-    '_ext',
-    ['modulated_deform_conv_forward', 'modulated_deform_conv_backward'])
+
+def _prepare(input, offset, mask, weight, bias):
+    if input is not None and input.dim() != 4:
+        raise ValueError(
+            f'Expected 4D tensor as input, got {input.dim()}D tensor instead.')
+    # Under AMP "offset" comes from an nn.Conv2d and is cast to float16
+    # while the rest may stay float32, so the type of offset decides the
+    # precision.
+    input = input.type_as(offset)
+    weight = weight.type_as(input)
+    if bias is not None:
+        bias = bias.type_as(input)
+    return input, mask.type_as(input), weight, bias
+
+
+def _op_args(weight, stride, padding, dilation, groups, deform_groups):
+    """Arguments of ``mmcv::modulated_deform_conv_forward`` after the
+    tensors."""
+    stride, padding, dilation = _pair(stride), _pair(padding), _pair(dilation)
+    return (weight.size(2), weight.size(3), stride[0], stride[1], padding[0],
+            padding[1], dilation[0], dilation[1], int(groups),
+            int(deform_groups))
+
+
+def _save(ctx, input, weight, bias, offset, mask, params):
+    ctx.save_for_backward(input, weight, bias, offset, mask)
+    ctx.params = params
+
+
+def _grads(ctx, grad_output):
+    """Gradients of input, weight, bias (None without a bias), offset and
+    mask."""
+    input, weight, bias, offset, mask = ctx.saved_tensors
+    grads = torch.ops.mmcv.modulated_deform_conv_backward(
+        input, weight, bias, offset, mask, grad_output, *ctx.params)
+    if bias is None:
+        grads = grads[:2] + (None, ) + grads[3:]
+    return grads
+
+
+def _setup_context(ctx, inputs, output):
+    input, weight, bias, offset, mask, *params = inputs
+    _save(ctx, input, weight, bias, offset, mask, params)
+
+
+def _backward(ctx, grad_output):
+    # schema order: input, weight, bias, offset, mask, then 10 ints
+    return tuple(_grads(ctx, grad_output)) + (None, ) * 10
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::modulated_deform_conv_forward')
+    def _(input, weight, bias, offset, mask, kernel_h, kernel_w, stride_h,
+          stride_w, pad_h, pad_w, dilation_h, dilation_w, group,
+          deformable_group):
+        n, _, h, w = input.shape
+        out_h = (h + 2 * pad_h -
+                 (dilation_h * (kernel_h - 1) + 1)) // stride_h + 1
+        out_w = (w + 2 * pad_w -
+                 (dilation_w * (kernel_w - 1) + 1)) // stride_w + 1
+        return input.new_empty((n, weight.size(0), out_h, out_w))
+
+    @torch.library.register_fake('mmcv::modulated_deform_conv_backward')
+    def _(input, weight, bias, offset, mask, grad_output, *_):
+        grad_bias = (
+            bias.new_empty(bias.shape)
+            if bias is not None else input.new_empty((0, )))
+        return (input.new_empty(input.shape), weight.new_empty(weight.shape),
+                grad_bias, offset.new_empty(offset.shape),
+                mask.new_empty(mask.shape))
+
+    torch.library.register_autograd(
+        'mmcv::modulated_deform_conv_forward',
+        _backward,
+        setup_context=_setup_context)
 
 
 class ModulatedDeformConv2dFunction(Function):
+    """:func:`modulated_deform_conv2d` as an autograd function, kept for the
+    TorchScript ONNX exporter (``symbolic``) and for
+    ``ModulatedDeformConv2dFunction.apply``."""
 
     @staticmethod
     def symbolic(g, input, offset, mask, weight, bias, stride, padding,
@@ -47,120 +124,43 @@ class ModulatedDeformConv2dFunction(Function):
                 dilation: int = 1,
                 groups: int = 1,
                 deform_groups: int = 1) -> torch.Tensor:
-        if input is not None and input.dim() != 4:
-            raise ValueError(
-                f'Expected 4D tensor as input, got {input.dim()}D tensor \
-                  instead.')
-        ctx.stride = _pair(stride)
-        ctx.padding = _pair(padding)
-        ctx.dilation = _pair(dilation)
-        ctx.groups = groups
-        ctx.deform_groups = deform_groups
-        ctx.with_bias = bias is not None
-        if not ctx.with_bias:
-            bias = input.new_empty(0)  # fake tensor
-        # When pytorch version >= 1.6.0, amp is adopted for fp16 mode;
-        # amp won't cast the type of model (float32), but "offset" is cast
-        # to float16 by nn.Conv2d automatically, leading to the type
-        # mismatch with input (when it is float32) or weight.
-        # The flag for whether to use fp16 or amp is the type of "offset",
-        # we cast weight and input to temporarily support fp16 and amp
-        # whatever the pytorch version is.
-        input = input.type_as(offset)
-        weight = weight.type_as(input)
-        bias = bias.type_as(input)  # type: ignore
-        mask = mask.type_as(input)
-        # the kernels read raw memory as dense tensors
-        input, offset, mask, weight, bias = (
-            t.contiguous() for t in (input, offset, mask, weight, bias))
-        ctx.save_for_backward(input, offset, mask, weight, bias)
-        output = input.new_empty([
-            int(i) for i in ModulatedDeformConv2dFunction._output_size(
-                ctx, input, weight)
-        ])
-        ctx._bufs = [input.new_empty(0), input.new_empty(0)]
-        ext_module.modulated_deform_conv_forward(
-            input,
-            weight,
-            bias,
-            ctx._bufs[0],
-            offset,
-            mask,
-            output,
-            ctx._bufs[1],
-            kernel_h=weight.size(2),
-            kernel_w=weight.size(3),
-            stride_h=ctx.stride[0],
-            stride_w=ctx.stride[1],
-            pad_h=ctx.padding[0],
-            pad_w=ctx.padding[1],
-            dilation_h=ctx.dilation[0],
-            dilation_w=ctx.dilation[1],
-            group=ctx.groups,
-            deformable_group=ctx.deform_groups,
-            with_bias=ctx.with_bias)
-        return output
+        input, mask, weight, bias = _prepare(input, offset, mask, weight, bias)
+        params = _op_args(weight, stride, padding, dilation, groups,
+                          deform_groups)
+        ext_loader.load()
+        _save(ctx, input, weight, bias, offset, mask, params)
+        return torch.ops.mmcv.modulated_deform_conv_forward(
+            input, weight, bias, offset, mask, *params)
 
     @staticmethod
     @once_differentiable
     def backward(ctx, grad_output: torch.Tensor) -> tuple:
-        input, offset, mask, weight, bias = ctx.saved_tensors
-        grad_output = grad_output.contiguous()
-        grad_input = torch.zeros_like(input)
-        grad_offset = torch.zeros_like(offset)
-        grad_mask = torch.zeros_like(mask)
-        grad_weight = torch.zeros_like(weight)
-        grad_bias = torch.zeros_like(bias)
-        grad_output = grad_output.contiguous()
-        ext_module.modulated_deform_conv_backward(
-            input,
-            weight,
-            bias,
-            ctx._bufs[0],
-            offset,
-            mask,
-            ctx._bufs[1],
-            grad_input,
-            grad_weight,
-            grad_bias,
-            grad_offset,
-            grad_mask,
-            grad_output,
-            kernel_h=weight.size(2),
-            kernel_w=weight.size(3),
-            stride_h=ctx.stride[0],
-            stride_w=ctx.stride[1],
-            pad_h=ctx.padding[0],
-            pad_w=ctx.padding[1],
-            dilation_h=ctx.dilation[0],
-            dilation_w=ctx.dilation[1],
-            group=ctx.groups,
-            deformable_group=ctx.deform_groups,
-            with_bias=ctx.with_bias)
-        if not ctx.with_bias:
-            grad_bias = None
-
+        grad_input, grad_weight, grad_bias, grad_offset, grad_mask = _grads(
+            ctx, grad_output)
         return (grad_input, grad_offset, grad_mask, grad_weight, grad_bias,
                 None, None, None, None, None)
 
-    @staticmethod
-    def _output_size(ctx, input, weight):
-        channels = weight.size(0)
-        output_size = (input.size(0), channels)
-        for d in range(input.dim() - 2):
-            in_size = input.size(d + 2)
-            pad = ctx.padding[d]
-            kernel = ctx.dilation[d] * (weight.size(d + 2) - 1) + 1
-            stride_ = ctx.stride[d]
-            output_size += ((in_size + (2 * pad) - kernel) // stride_ + 1, )
-        if not all(map(lambda s: s > 0, output_size)):
-            raise ValueError(
-                'convolution input is too small (output would be ' +
-                'x'.join(map(str, output_size)) + ')')
-        return output_size
 
-
-modulated_deform_conv2d = ModulatedDeformConv2dFunction.apply
+def modulated_deform_conv2d(input: torch.Tensor,
+                            offset: torch.Tensor,
+                            mask: torch.Tensor,
+                            weight: nn.Parameter,
+                            bias: Optional[nn.Parameter] = None,
+                            stride: int = 1,
+                            padding: int = 0,
+                            dilation: int = 1,
+                            groups: int = 1,
+                            deform_groups: int = 1) -> torch.Tensor:
+    if torch.onnx.is_in_onnx_export():
+        return ModulatedDeformConv2dFunction.apply(input, offset, mask, weight,
+                                                   bias, stride, padding,
+                                                   dilation, groups,
+                                                   deform_groups)
+    input, mask, weight, bias = _prepare(input, offset, mask, weight, bias)
+    ext_loader.load()
+    return torch.ops.mmcv.modulated_deform_conv_forward(
+        input, weight, bias, offset, mask,
+        *_op_args(weight, stride, padding, dilation, groups, deform_groups))
 
 
 class ModulatedDeformConv2d(nn.Module):

@@ -15,9 +15,65 @@ from torch.autograd.function import Function, once_differentiable
 from mmcv.utils import IS_CUDA_AVAILABLE
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext(
-    '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
 EXT_BUILT = ext_loader.check_ops_exist()
+
+
+def _setup_context(ctx, inputs, output):
+    *tensors, im2col_step = inputs
+    ctx.save_for_backward(*tensors)
+    ctx.im2col_step = im2col_step
+
+
+def _backward(ctx, grad_output):
+    grad_value, grad_sampling_loc, grad_attn_weight = \
+        torch.ops.mmcv.ms_deform_attn_backward(
+            *ctx.saved_tensors, grad_output, ctx.im2col_step)
+    return grad_value, None, None, grad_sampling_loc, grad_attn_weight, None
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::ms_deform_attn_forward')
+    def _(value, value_spatial_shapes, value_level_start_index,
+          sampling_locations, attention_weights, im2col_step):
+        bs, _, num_heads, channels = value.shape
+        return value.new_empty(
+            (bs, sampling_locations.size(1), num_heads * channels))
+
+    @torch.library.register_fake('mmcv::ms_deform_attn_backward')
+    def _(value, value_spatial_shapes, value_level_start_index,
+          sampling_locations, attention_weights, grad_output, im2col_step):
+        return (value.new_empty(value.shape),
+                sampling_locations.new_empty(sampling_locations.shape),
+                attention_weights.new_empty(attention_weights.shape))
+
+    torch.library.register_autograd(
+        'mmcv::ms_deform_attn_forward', _backward, setup_context=_setup_context)
+
+
+def _ms_deform_attn_args(value, value_spatial_shapes, value_level_start_index,
+                         sampling_locations, attention_weights, im2col_step):
+    # Under AMP "value" is cast to float16 while sampling_locations and
+    # attention_weights stay float32, so the type of value decides.
+    return (value, value_spatial_shapes, value_level_start_index,
+            sampling_locations.type_as(value),
+            attention_weights.type_as(value), int(im2col_step))
+
+
+def multi_scale_deformable_attn_cuda(value: torch.Tensor,
+                                     value_spatial_shapes: torch.Tensor,
+                                     value_level_start_index: torch.Tensor,
+                                     sampling_locations: torch.Tensor,
+                                     attention_weights: torch.Tensor,
+                                     im2col_step: int) -> torch.Tensor:
+    """The CUDA kernel of multi-scale deformable attention (registered op
+    ``mmcv::ms_deform_attn_forward``); see
+    :class:`MultiScaleDeformableAttnFunction` for the arguments."""
+    ext_loader.load()
+    return torch.ops.mmcv.ms_deform_attn_forward(*_ms_deform_attn_args(
+        value, value_spatial_shapes, value_level_start_index,
+        sampling_locations, attention_weights, im2col_step))
 
 
 class MultiScaleDeformableAttnFunction(Function):
@@ -49,35 +105,13 @@ class MultiScaleDeformableAttnFunction(Function):
             torch.Tensor: has shape (bs, num_queries, embed_dims)
         """
 
-        ctx.im2col_step = im2col_step
-
-        # When pytorch version >= 1.6.0, amp is adopted for fp16 mode;
-        # amp won't cast the type of sampling_locations, attention_weights
-        # (float32), but "value" is cast to float16, leading to the type
-        # mismatch with input (when it is float32) or weight.
-        # The flag for whether to use fp16 or amp is the type of "value",
-        # we cast sampling_locations and attention_weights to
-        # temporarily support fp16 and amp whatever the
-        # pytorch version is.
-        sampling_locations = sampling_locations.type_as(value)
-        attention_weights = attention_weights.type_as(value)
-        # the kernels read raw memory as dense tensors
-        value, sampling_locations, attention_weights = (
-            value.contiguous(), sampling_locations.contiguous(),
-            attention_weights.contiguous())
-        value_spatial_shapes = value_spatial_shapes.contiguous()
-        value_level_start_index = value_level_start_index.contiguous()
-
-        output = ext_module.ms_deform_attn_forward(
-            value,
-            value_spatial_shapes,
-            value_level_start_index,
-            sampling_locations,
-            attention_weights,
-            im2col_step=ctx.im2col_step)
-        ctx.save_for_backward(value, value_spatial_shapes,
-                              value_level_start_index, sampling_locations,
-                              attention_weights)
+        args = _ms_deform_attn_args(value, value_spatial_shapes,
+                                    value_level_start_index,
+                                    sampling_locations, attention_weights,
+                                    im2col_step)
+        ext_loader.load()
+        output = torch.ops.mmcv.ms_deform_attn_forward(*args)
+        _setup_context(ctx, args, output)
         return output
 
     @staticmethod
@@ -91,26 +125,7 @@ class MultiScaleDeformableAttnFunction(Function):
         Returns:
             tuple[Tensor]: Gradient of input tensors in forward.
         """
-        value, value_spatial_shapes, value_level_start_index, \
-            sampling_locations, attention_weights = ctx.saved_tensors
-        grad_value = torch.zeros_like(value)
-        grad_sampling_loc = torch.zeros_like(sampling_locations)
-        grad_attn_weight = torch.zeros_like(attention_weights)
-
-        ext_module.ms_deform_attn_backward(
-            value,
-            value_spatial_shapes,
-            value_level_start_index,
-            sampling_locations,
-            attention_weights,
-            grad_output.contiguous(),
-            grad_value,
-            grad_sampling_loc,
-            grad_attn_weight,
-            im2col_step=ctx.im2col_step)
-
-        return grad_value, None, None, \
-            grad_sampling_loc, grad_attn_weight, None
+        return _backward(ctx, grad_output)
 
 
 def multi_scale_deformable_attn_pytorch(
@@ -372,9 +387,11 @@ class MultiScaleDeformableAttention(BaseModule):
                 f' 2 or 4, but get {reference_points.shape[-1]} instead.')
         # the PyTorch version runs without the compiled extension and exports
         # to standard ONNX ops (GridSample), so it is also the export path
-        if (IS_CUDA_AVAILABLE and value.is_cuda and EXT_BUILT
-                and not torch.onnx.is_in_onnx_export()):
-            output = MultiScaleDeformableAttnFunction.apply(
+        use_kernel = (
+            IS_CUDA_AVAILABLE and value.is_cuda and EXT_BUILT
+            and not torch.onnx.is_in_onnx_export())
+        if use_kernel:
+            output = multi_scale_deformable_attn_cuda(
                 value, spatial_shapes, level_start_index, sampling_locations,
                 attention_weights, self.im2col_step)
         else:

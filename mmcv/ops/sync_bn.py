@@ -12,10 +12,37 @@ from torch.nn.parameter import Parameter
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext', [
-    'sync_bn_forward_mean', 'sync_bn_forward_var', 'sync_bn_forward_output',
-    'sync_bn_backward_param', 'sync_bn_backward_data'
-])
+
+
+@ext_loader.on_load
+def _register():
+    # The kernels behind SyncBatchNormFunction. They have no autograd of
+    # their own: the function all-reduces between them.
+
+    @torch.library.register_fake('mmcv::sync_bn_forward_mean')
+    def _(input):
+        return input.new_empty((input.size(1), ), dtype=torch.float)
+
+    @torch.library.register_fake('mmcv::sync_bn_forward_var')
+    def _(input, mean):
+        return input.new_empty((input.size(1), ), dtype=torch.float)
+
+    @torch.library.register_fake('mmcv::sync_bn_forward_output')
+    def _(input, mean, var, weight, bias, running_mean, running_var, eps,
+          momentum, group_size):
+        return (input.new_empty(input.shape),
+                input.new_empty(input.shape, dtype=torch.float),
+                input.new_empty((input.size(1), ), dtype=torch.float))
+
+    @torch.library.register_fake('mmcv::sync_bn_backward_param')
+    def _(grad_output, norm):
+        channels = grad_output.size(1)
+        return (norm.new_empty((channels, ), dtype=torch.float),
+                norm.new_empty((channels, ), dtype=torch.float))
+
+    @torch.library.register_fake('mmcv::sync_bn_backward_data')
+    def _(grad_output, weight, grad_weight, grad_bias, norm, std):
+        return grad_output.new_empty(grad_output.shape)
 
 
 class SyncBatchNormFunction(Function):
@@ -51,30 +78,21 @@ class SyncBatchNormFunction(Function):
                    input, (torch.HalfTensor, torch.FloatTensor,
                            torch.cuda.HalfTensor, torch.cuda.FloatTensor)), \
                f'only support Half or Float Tensor, but {input.type()}'
-        # the kernels read raw memory as dense tensors
-        input = input.contiguous()
-        output = torch.zeros_like(input)
-        input3d = input.flatten(start_dim=2)
-        output3d = output.view_as(input3d)
+        ext_loader.load()
+        input3d = input.contiguous().flatten(start_dim=2)
         num_channels = input3d.size(1)
 
-        # ensure mean/var/norm/std are initialized as zeros
-        # ``torch.empty()`` does not guarantee that
+        # mean and var stay zeros when the input is empty
         mean = torch.zeros(
             num_channels, dtype=torch.float, device=input3d.device)
         var = torch.zeros(
             num_channels, dtype=torch.float, device=input3d.device)
-        norm = torch.zeros_like(
-            input3d, dtype=torch.float, device=input3d.device)
-        std = torch.zeros(
-            num_channels, dtype=torch.float, device=input3d.device)
 
         batch_size = input3d.size(0)
         if batch_size > 0:
-            ext_module.sync_bn_forward_mean(input3d, mean)
+            mean = torch.ops.mmcv.sync_bn_forward_mean(input3d)
             batch_flag = torch.ones([1], device=mean.device, dtype=mean.dtype)
         else:
-            # skip updating mean and leave it as zeros when the input is empty
             batch_flag = torch.zeros([1], device=mean.device, dtype=mean.dtype)
 
         # synchronize mean and the batch flag
@@ -93,9 +111,8 @@ class SyncBatchNormFunction(Function):
         else:
             raise NotImplementedError
 
-        # leave var as zeros when the input is empty
         if batch_size > 0:
-            ext_module.sync_bn_forward_var(input3d, mean, var)
+            var = torch.ops.mmcv.sync_bn_forward_var(input3d, mean)
 
         if self.stats_mode == 'N':
             var *= batch_size
@@ -112,39 +129,26 @@ class SyncBatchNormFunction(Function):
         # if the total batch size over all the ranks is zero,
         # we should not update the statistics in the current batch
         update_flag = total_batch.clamp(max=1)
-        momentum = update_flag * self.momentum
-        ext_module.sync_bn_forward_output(
-            input3d,
-            mean,
-            var,
-            weight,
-            bias,
-            running_mean,
-            running_var,
-            norm,
-            std,
-            output3d,
-            eps=self.eps,
-            momentum=momentum,
-            group_size=self.group_size)
+        momentum = float(update_flag) * self.momentum
+        # updates running_mean and running_var in place
+        output3d, norm, std = torch.ops.mmcv.sync_bn_forward_output(
+            input3d, mean, var, weight, bias, running_mean, running_var,
+            float(self.eps), momentum, self.group_size)
         self.save_for_backward(norm, std, weight)
-        return output
+        return output3d.view_as(input)
 
     @staticmethod
     @once_differentiable
     def backward(self, grad_output: torch.Tensor) -> tuple:
         norm, std, weight = self.saved_tensors
-        grad_output = grad_output.contiguous()
+        grad_output3d = grad_output.contiguous().flatten(start_dim=2)
         grad_weight = torch.zeros_like(weight)
         grad_bias = torch.zeros_like(weight)
-        grad_input = torch.zeros_like(grad_output)
-        grad_output3d = grad_output.flatten(start_dim=2)
-        grad_input3d = grad_input.view_as(grad_output3d)
 
-        batch_size = grad_input3d.size(0)
+        batch_size = grad_output3d.size(0)
         if batch_size > 0:
-            ext_module.sync_bn_backward_param(grad_output3d, norm, grad_weight,
-                                              grad_bias)
+            grad_weight, grad_bias = torch.ops.mmcv.sync_bn_backward_param(
+                grad_output3d, norm)
 
         # all reduce
         if self.group_size > 1:
@@ -154,9 +158,11 @@ class SyncBatchNormFunction(Function):
             grad_bias /= self.group_size
 
         if batch_size > 0:
-            ext_module.sync_bn_backward_data(grad_output3d, weight,
-                                             grad_weight, grad_bias, norm, std,
-                                             grad_input3d)
+            grad_input = torch.ops.mmcv.sync_bn_backward_data(
+                grad_output3d, weight, grad_weight, grad_bias, norm,
+                std).view_as(grad_output)
+        else:
+            grad_input = torch.zeros_like(grad_output)
 
         return grad_input, None, None, grad_weight, grad_bias, \
             None, None, None, None, None

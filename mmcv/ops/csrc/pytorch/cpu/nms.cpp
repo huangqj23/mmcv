@@ -1,6 +1,5 @@
 // Copyright (c) OpenMMLab. All rights reserved
 #include "pytorch_cpp_helper.hpp"
-#include "pytorch_device_registry.hpp"
 
 Tensor nms_cpu(Tensor boxes, Tensor scores, float iou_threshold, int offset) {
   if (boxes.numel() == 0) {
@@ -52,9 +51,6 @@ Tensor nms_cpu(Tensor boxes, Tensor scores, float iou_threshold, int offset) {
   }
   return order_t.masked_select(select_t);
 }
-
-Tensor nms_impl(Tensor boxes, Tensor scores, float iou_threshold, int offset);
-REGISTER_DEVICE_IMPL(nms_impl, CPU, nms_cpu);
 
 Tensor softnms_cpu(Tensor boxes, Tensor scores, Tensor dets,
                    float iou_threshold, float sigma, float min_score,
@@ -160,11 +156,6 @@ Tensor softnms_cpu(Tensor boxes, Tensor scores, Tensor dets,
   return inds_t.slice(0, 0, nboxes);
 }
 
-Tensor softnms_impl(Tensor boxes, Tensor scores, Tensor dets,
-                    float iou_threshold, float sigma, float min_score,
-                    int method, int offset);
-REGISTER_DEVICE_IMPL(softnms_impl, CPU, softnms_cpu);
-
 std::vector<std::vector<int> > nms_match_cpu(Tensor dets, float iou_threshold) {
   auto x1_t = dets.select(1, 0).contiguous();
   auto y1_t = dets.select(1, 1).contiguous();
@@ -225,6 +216,3 @@ std::vector<std::vector<int> > nms_match_cpu(Tensor dets, float iou_threshold) {
     matched[i].insert(matched[i].begin(), keep[i]);
   return matched;
 }
-
-std::vector<std::vector<int> > nms_match_impl(Tensor dets, float iou_threshold);
-REGISTER_DEVICE_IMPL(nms_match_impl, CPU, nms_match_cpu);

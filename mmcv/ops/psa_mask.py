@@ -9,8 +9,6 @@ from torch.nn.modules.utils import _pair
 
 from ..utils import ext_loader
 
-ext_module = ext_loader.load_ext('_ext',
-                                 ['psamask_forward', 'psamask_backward'])
 EXT_BUILT = ext_loader.check_ops_exist()
 
 
@@ -66,66 +64,58 @@ def psa_mask_pytorch(input: torch.Tensor, psa_type: int,
     return x.reshape(n, h * w, h, w)
 
 
+def _setup_context(ctx, inputs, output):
+    _, *params = inputs  # psa_type, h_mask, w_mask
+    ctx.params = params
+
+
+def _backward(ctx, grad_output):
+    return (torch.ops.mmcv.psamask_backward(grad_output, *ctx.params), None,
+            None, None)
+
+
+@ext_loader.on_load
+def _register():
+
+    @torch.library.register_fake('mmcv::psamask_forward')
+    def _(input, psa_type, h_mask, w_mask):
+        n, _, h, w = input.shape
+        return input.new_empty((n, h * w, h, w))
+
+    @torch.library.register_fake('mmcv::psamask_backward')
+    def _(grad_output, psa_type, h_mask, w_mask):
+        n, _, h, w = grad_output.shape
+        return grad_output.new_empty((n, h_mask * w_mask, h, w))
+
+    torch.library.register_autograd(
+        'mmcv::psamask_forward', _backward, setup_context=_setup_context)
+
+
 class PSAMaskFunction(Function):
+    """Kept for code that calls ``PSAMaskFunction.apply``; :func:`psa_mask`
+    uses the registered op ``mmcv::psamask_forward``."""
 
     @staticmethod
     def forward(ctx, input: torch.Tensor, psa_type: str,
                 mask_size: int) -> torch.Tensor:
-        ctx.psa_type = psa_type
-        ctx.mask_size = _pair(mask_size)
-        # the kernels read raw memory as dense tensors
-        input = input.contiguous()
-        ctx.save_for_backward(input)
-
-        h_mask, w_mask = ctx.mask_size
-        batch_size, channels, h_feature, w_feature = input.size()
-        assert channels == h_mask * w_mask
-        output = input.new_zeros(
-            (batch_size, h_feature * w_feature, h_feature, w_feature))
-
-        ext_module.psamask_forward(
-            input,
-            output,
-            psa_type=psa_type,
-            num_=batch_size,
-            h_feature=h_feature,
-            w_feature=w_feature,
-            h_mask=h_mask,
-            w_mask=w_mask,
-            half_h_mask=(h_mask - 1) // 2,
-            half_w_mask=(w_mask - 1) // 2)
-        return output
+        ext_loader.load()
+        ctx.params = (int(psa_type), *_pair(mask_size))
+        return torch.ops.mmcv.psamask_forward(input, *ctx.params)
 
     @staticmethod
     def backward(
             ctx, grad_output: torch.Tensor
     ) -> Tuple[torch.Tensor, None, None, None]:
-        input = ctx.saved_tensors[0]
-        grad_output = grad_output.contiguous()
-        psa_type = ctx.psa_type
-        h_mask, w_mask = ctx.mask_size
-        batch_size, channels, h_feature, w_feature = input.size()
-        grad_input = grad_output.new_zeros(
-            (batch_size, channels, h_feature, w_feature))
-        ext_module.psamask_backward(
-            grad_output,
-            grad_input,
-            psa_type=psa_type,
-            num_=batch_size,
-            h_feature=h_feature,
-            w_feature=w_feature,
-            h_mask=h_mask,
-            w_mask=w_mask,
-            half_h_mask=(h_mask - 1) // 2,
-            half_w_mask=(w_mask - 1) // 2)
-        return grad_input, None, None, None
+        return _backward(ctx, grad_output)
 
 
 def psa_mask(input: torch.Tensor, psa_type: int, mask_size) -> torch.Tensor:
     if (not EXT_BUILT or torch.onnx.is_in_onnx_export()
             or torch.compiler.is_compiling()):
         return psa_mask_pytorch(input, psa_type, mask_size)
-    return PSAMaskFunction.apply(input, psa_type, mask_size)
+    ext_loader.load()
+    return torch.ops.mmcv.psamask_forward(input, int(psa_type),
+                                          *_pair(mask_size))
 
 
 class PSAMask(nn.Module):
