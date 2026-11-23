@@ -93,6 +93,11 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install torch, mmengine and the test dependencies
         run: |
+          # the pins hold for every pip call of the job; otherwise a later
+          # install moves them (onnx -> ml_dtypes 0.7 requires numpy >= 2)
+          printf '%s\n' ${{ matrix.pins }} > "$RUNNER_TEMP/pins.txt"
+          echo "PIP_CONSTRAINT=$RUNNER_TEMP/pins.txt" >> "$GITHUB_ENV"
+          export PIP_CONSTRAINT=$RUNNER_TEMP/pins.txt
           pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
           pip install 'setuptools<70' wheel ninja ${{ matrix.pins }}
           pip install --no-build-isolation "mmengine @ $MMENGINE"
@@ -144,6 +149,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install torch, mmengine, mmdet, the runtimes
         run: |
+          # the pins hold for every pip call of the job (see the cpu job)
+          printf '%s\n' ${{ matrix.pins }} > "$RUNNER_TEMP/pins.txt"
+          echo "PIP_CONSTRAINT=$RUNNER_TEMP/pins.txt" >> "$GITHUB_ENV"
+          export PIP_CONSTRAINT=$RUNNER_TEMP/pins.txt
           pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
           pip install 'setuptools<70' wheel ninja ${{ matrix.pins }}
           pip install --no-build-isolation "mmengine @ $MMENGINE"
@@ -151,7 +160,9 @@ jobs:
           # mmdet is installed without its dependencies; six is one of them
           # (python-dateutil 4 no longer brings it along)
           pip install matplotlib prettytable scipy ftfy regex pycocotools shapely terminaltables tqdm six
-          pip install --no-deps "mmdet @ git+https://github.com/huangqj23/mmdetection.git@industrial"
+          # mmdet's setup.py imports torch; without --no-build-isolation a
+          # current pip builds it in a fresh environment that has no torch
+          pip install --no-deps --no-build-isolation "mmdet @ git+https://github.com/huangqj23/mmdetection.git@industrial"
       - name: Build mmcv with the CPU kernels
         env:
           MMCV_WITH_OPS: 1
